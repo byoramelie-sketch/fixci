@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+/* =========================================================================
+   THEME FixCI — couleurs et polices du cahier des charges v1.1
+   Tailwind v4 : on declare les tokens dans @theme, ils deviennent
+   utilisables comme bg-fond, text-orange, etc.
+   ========================================================================= */
+@theme {
+  --color-fond: #f7f4ee;       /* arriere-plan general */
+  --color-carte: #ffffff;      /* cartes, conteneurs */
+  --color-secondaire: #f1eadd; /* panneaux, en-tetes */
+  --color-texte: #2b2a26;      /* texte principal */
+  --color-texte2: #6b6860;     /* texte secondaire */
+  --color-orange: #e07b39;     /* boutons, actif */
+  --color-vert: #4c8c5a;       /* succes, verifie, paye */
+  --color-or: #b8924a;         /* intitules de section */
+  --color-bordure: #e2d9c8;    /* separateurs, contours */
+
+  --font-titre: "Fraunces", Georgia, serif;
+  --font-corps: "Inter", system-ui, sans-serif;
+
+  --radius: 12px;
+}
+
+body {
+  background-color: var(--color-fond);
+  color: var(--color-texte);
+  font-family: var(--font-corps);
+}
+
+h1, h2, h3 {
+  font-family: var(--font-titre);
+}
+
+/* Le fin filet tricolore (drapeau ivoirien) a poser en haut/bas des ecrans cles. */
+.filet-tricolore {
+  height: 4px;
+  width: 100%;
+  background: linear-gradient(
+    to right,
+    var(--color-orange) 0 33.33%,
+    #ffffff 33.33% 66.66%,
+    var(--color-vert) 66.66% 100%
+  );
+}
