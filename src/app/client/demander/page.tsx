@@ -51,7 +51,7 @@ function CarteMetier({ metier }: { metier: Metier }) {
   const Icone = ICONES_METIER[metier.slug] ?? IconeOutils;
   return (
     <Link
-      href={`/client/demander/${metier.slug}`}
+      href={`/client/demander/formulaire?service=${metier.slug}`}
       className="flex flex-col items-center justify-center gap-2 rounded-xl border p-4 text-center"
       style={{ background: "var(--color-carte)", borderColor: "var(--color-bordure)" }}
     >

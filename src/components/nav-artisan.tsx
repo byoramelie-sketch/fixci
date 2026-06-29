@@ -12,6 +12,7 @@ import {
   IconeTableau,
   IconeDemandes,
   IconeAvis,
+  IconeMessage,
   IconeProfil,
 } from "@/components/icones";
 
@@ -19,6 +20,7 @@ import {
 const ONGLETS = [
   { cle: "tableau", libelle: "Tableau", Icone: IconeTableau, chemin: "/artisan" },
   { cle: "demandes", libelle: "Demandes", Icone: IconeDemandes, chemin: "/artisan/demandes" },
+  { cle: "messages", libelle: "Messages", Icone: IconeMessage, chemin: "/artisan/messages" },
   { cle: "avis", libelle: "Avis", Icone: IconeAvis, chemin: "/artisan/avis" },
   { cle: "profil", libelle: "Profil", Icone: IconeProfil, chemin: "/artisan/profil" },
 ];

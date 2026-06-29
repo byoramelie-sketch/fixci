@@ -46,6 +46,7 @@ export async function updateSession(request: NextRequest) {
     "/inscription",          // choix du type de compte
     "/artisan/inscription",  // parcours d'inscription artisan
     "/admin/connexion",      // connexion admin dediee
+    "/admin/inscription",    // creation de compte admin (protegee par code secret)
   ];
   const isAuthPage = pagesPubliques.includes(path);
 

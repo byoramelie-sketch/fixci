@@ -158,15 +158,14 @@ export default function AccueilClient() {
           </h2>
         </div>
         <p className="text-sm" style={{ color: "var(--color-texte2)" }}>
-          Faites votre premiere demande : nous vous mettons en relation avec un
-          artisan verifie, pres de chez vous.
+          Parcourez nos artisans verifies et choisissez celui qui vous convient.
         </p>
         <Link
-          href="/client/demander"
+          href="/client/artisans"
           className="text-sm font-semibold"
           style={{ color: "var(--color-orange)" }}
         >
-          Faire une demande
+          Voir les artisans
         </Link>
       </section>
     </div>
