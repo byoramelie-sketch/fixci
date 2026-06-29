@@ -19,6 +19,7 @@ import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore } from "@/components/ui";
 import { NavArtisan } from "@/components/nav-artisan";
 import { BoutonRetour, IconeLieu, IconeMessage } from "@/components/icones";
+import { Noter } from "@/components/noter";
 
 // ===== Type du detail affiche =====
 type Detail = {
@@ -61,6 +62,7 @@ export default function DetailDemandeArtisan() {
   const [info, setInfo] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [paiement, setPaiement] = useState<{ statut: string; net: number } | null>(null);
+  const [dejaNote, setDejaNote] = useState(false);
 
   // ===== Chargement initial =====
   useEffect(() => {
@@ -126,6 +128,16 @@ export default function DetailDemandeArtisan() {
           | { status: string; artisan_payout_fcfa: number }
           | undefined;
         if (p) setPaiement({ statut: p.status, net: p.artisan_payout_fcfa });
+
+        // L'artisan a-t-il deja note le client pour ce chantier ?
+        const { data: avis } = await supabase
+          .from("reviews")
+          .select("id")
+          .eq("job_id", job.id)
+          .eq("author_id", auth.user.id)
+          .eq("direction", "artisan_to_client")
+          .maybeSingle();
+        setDejaNote(!!avis);
       }
 
       setDetail({
@@ -457,6 +469,21 @@ export default function DetailDemandeArtisan() {
             }}
           >
             Travail valide par le client ✓
+          </p>
+        )}
+
+        {/* ===== Noter le client (apres validation) ===== */}
+        {detail.status === "validated" && jobId && !dejaNote && (
+          <Noter
+            jobId={jobId}
+            cible="le client"
+            tagsProposes={["Aimable", "Paiement rapide", "Demande claire"]}
+            onDone={() => setDejaNote(true)}
+          />
+        )}
+        {detail.status === "validated" && dejaNote && (
+          <p className="text-center text-xs" style={{ color: "var(--color-texte2)" }}>
+            Vous avez note ce client. Merci !
           </p>
         )}
 

@@ -24,6 +24,7 @@ import {
   type MethodePaiement,
 } from "@/lib/paiement";
 import { ouvrirConversation } from "@/lib/messagerie";
+import { Noter } from "@/components/noter";
 
 // ===== Types =====
 type Demande = {
@@ -83,6 +84,7 @@ function Contenu() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [paiement, setPaiement] = useState<Paiement | null>(null);
   const [methode, setMethode] = useState<MethodePaiement>("wave");
+  const [dejaNote, setDejaNote] = useState(false);
 
   // ===== Chargement (extrait pour pouvoir recharger apres une action) =====
   async function charger() {
@@ -146,6 +148,20 @@ function Contenu() {
 
     // Paiement eventuel lie au chantier (acompte, solde, statut, net...).
     setPaiement(job ? await lirePaiement(job.id) : null);
+
+    // Le client a-t-il deja note l'artisan pour ce chantier ?
+    if (job) {
+      const { data: avis } = await supabase
+        .from("reviews")
+        .select("id")
+        .eq("job_id", job.id)
+        .eq("author_id", auth.user.id)
+        .eq("direction", "client_to_artisan")
+        .maybeSingle();
+      setDejaNote(!!avis);
+    } else {
+      setDejaNote(false);
+    }
 
     setDemande({
       id: d.id,
@@ -455,6 +471,23 @@ function Contenu() {
               </span>
               {paiement.aggregator_reference && <span>Ref. : {paiement.aggregator_reference}</span>}
             </div>
+          )}
+
+          {/* --- Noter l'artisan (apres validation) --- */}
+          {demande.status === "validated" && jobId && !dejaNote && (
+            <div className="mt-1 border-t pt-3" style={{ borderColor: "var(--color-bordure)" }}>
+              <Noter
+                jobId={jobId}
+                cible="l'artisan"
+                tagsProposes={["Ponctuel", "Travail soigné", "Bon contact", "Bon rapport qualité-prix"]}
+                onDone={() => setDejaNote(true)}
+              />
+            </div>
+          )}
+          {demande.status === "validated" && dejaNote && (
+            <span className="text-xs" style={{ color: "var(--color-texte2)" }}>
+              Vous avez noté cette intervention. Merci !
+            </span>
           )}
         </div>
       )}
