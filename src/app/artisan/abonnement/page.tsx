@@ -2,172 +2,249 @@
 "use client";
 
 // =========================================================================
-// Abonnement & facturation de l'artisan.
-//   - Formule actuelle (gratuit avec commission, ou mensuel)
-//   - Option de mise en avant (featured_listing)
-//   - Historique des paiements (commissions et reversements)
-//   - Fleche retour vers le tableau de bord + barre de navigation
+// Ecran "Abonnement & visibilite" de l'artisan (A8).
+// - Rappelle la formule actuelle (Gratuit + commission 10 %).
+// - Presente 2 offres payantes : abonnement mensuel + mise en avant.
+// - Au lancement : boutons "Bientot disponible" (interrupteur dans
+//   src/lib/abonnement.ts). Quand on ouvre les paiements, l'ecran devient
+//   payable automatiquement (choix Wave / Orange Money + souscription).
+// Ecran enfant -> fleche retour en haut (accessible depuis le profil).
 // =========================================================================
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore } from "@/components/ui";
-import { NavArtisan } from "@/components/nav-artisan";
-import { BoutonRetour } from "@/components/icones";
+import { BoutonRetour, IconeCheck } from "@/components/icones";
+import {
+  ABONNEMENTS_DISPONIBLES,
+  souscrire,
+  lireAbonnementsActifs,
+  type TypeAbonnement,
+  type MethodePaiement,
+} from "@/lib/abonnement";
 
-// ===== Types =====
-type LignePaiement = {
-  id: string;
-  libelle: string;
-  montant: number;
-  positif: boolean;
-  date: string;
+function prixLisible(n: number) {
+  return n.toLocaleString("fr-FR").replace(/\u00A0/g, " ") + " FCFA";
+}
+function dateLisible(iso: string) {
+  return new Date(iso).toLocaleDateString("fr-FR", { day: "2-digit", month: "long", year: "numeric" });
+}
+
+type Offre = {
+  type: TypeAbonnement;
+  titre: string;
+  prix: number;
+  avantages: string[];
 };
 
-export default function AbonnementArtisan() {
-  const router = useRouter();
+const OFFRES: Offre[] = [
+  {
+    type: "monthly_subscription",
+    titre: "Abonnement mensuel",
+    prix: 5000,
+    avantages: ["Badge « Membre » sur votre profil", "Meilleur classement dans les résultats", "Priorité sur les nouvelles demandes"],
+  },
+  {
+    type: "featured_listing",
+    titre: "Mise en avant",
+    prix: 3000,
+    avantages: ["En tête des résultats de recherche", "Mis en avant sur la page d'accueil"],
+  },
+];
+
+export default function Abonnement() {
   const supabase = createClient();
   const [chargement, setChargement] = useState(true);
-  const [formuleMensuelle, setFormuleMensuelle] = useState(false);
+  const [aAbonnement, setAAbonnement] = useState(false);
   const [estEnAvant, setEstEnAvant] = useState(false);
-  const [historique, setHistorique] = useState<LignePaiement[]>([]);
+  const [finAvant, setFinAvant] = useState<string | null>(null);
+  const [finAbo, setFinAbo] = useState<string | null>(null);
+  const [methode, setMethode] = useState<MethodePaiement>("wave");
+  const [action, setAction] = useState<TypeAbonnement | null>(null);
+  const [erreur, setErreur] = useState<string | null>(null);
+
+  async function charger() {
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) {
+      setChargement(false);
+      return;
+    }
+    const { data: fiche } = await supabase
+      .from("artisans")
+      .select("has_active_subscription, is_featured, featured_until")
+      .eq("id", auth.user.id)
+      .maybeSingle();
+    if (fiche) {
+      setAAbonnement(!!fiche.has_active_subscription);
+      setEstEnAvant(!!fiche.is_featured);
+      setFinAvant(fiche.featured_until ?? null);
+    }
+    // Date de fin de l'abonnement mensuel (si actif).
+    const abos = await lireAbonnementsActifs();
+    const abo = abos.find((a) => a.type === "monthly_subscription");
+    setFinAbo(abo ? abo.period_end : null);
+    setChargement(false);
+  }
 
   useEffect(() => {
-    (async () => {
-      const { data: auth } = await supabase.auth.getUser();
-      const uid = auth.user?.id;
-      if (!uid) {
-        router.push("/connexion");
-        return;
-      }
+    charger();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      // Abonnements actifs.
-      const { data: abos } = await supabase
-        .from("artisan_subscriptions")
-        .select("type, status")
-        .eq("artisan_id", uid)
-        .eq("status", "active");
-      setFormuleMensuelle((abos ?? []).some((a) => a.type === "monthly_subscription"));
-      setEstEnAvant((abos ?? []).some((a) => a.type === "featured_listing"));
-
-      // Historique : paiements lies aux jobs de cet artisan.
-      const { data: jobs } = await supabase.from("jobs").select("id").eq("artisan_id", uid);
-      const ids = (jobs ?? []).map((j) => j.id);
-      if (ids.length > 0) {
-        const { data: paies } = await supabase
-          .from("payments")
-          .select("id, artisan_payout_fcfa, commission_fcfa, payout_at, created_at, status")
-          .in("job_id", ids)
-          .order("created_at", { ascending: false });
-
-        const lignes: LignePaiement[] = [];
-        (paies ?? []).forEach((p) => {
-          // Reversement a l'artisan (positif).
-          if (p.artisan_payout_fcfa && p.status === "released") {
-            lignes.push({
-              id: `${p.id}-payout`,
-              libelle: "Reversement intervention",
-              montant: p.artisan_payout_fcfa,
-              positif: true,
-              date: p.payout_at ?? p.created_at,
-            });
-          }
-          // Commission FixCI (negatif).
-          if (p.commission_fcfa) {
-            lignes.push({
-              id: `${p.id}-commission`,
-              libelle: "Commission FixCI",
-              montant: p.commission_fcfa,
-              positif: false,
-              date: p.created_at,
-            });
-          }
-        });
-        setHistorique(lignes);
-      }
-      setChargement(false);
-    })();
-  }, [supabase, router]);
-
-  if (chargement) {
-    return (
-      <div className="min-h-screen bg-fond">
-        <FiletTricolore />
-        <div className="px-5 py-10 text-center text-texte2">Chargement...</div>
-      </div>
-    );
+  async function lancerSouscription(type: TypeAbonnement) {
+    setAction(type);
+    setErreur(null);
+    try {
+      await souscrire(type, methode);
+      await charger();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "La souscription a échoué.");
+    } finally {
+      setAction(null);
+    }
   }
 
   return (
-    <div className="min-h-screen bg-fond pb-24">
+    <div className="min-h-screen bg-fond">
       <FiletTricolore />
       <div className="mx-auto max-w-md px-5 py-6">
-        {/* Fleche retour */}
-        <header className="mb-5 flex items-center gap-3">
-          <BoutonRetour />
-          <h1 className="text-lg">Abonnement</h1>
-        </header>
+        <BoutonRetour />
+        <h1 className="mb-1 mt-2 text-xl" style={{ color: "var(--color-texte)" }}>
+          Abonnement & visibilité
+        </h1>
+        <p className="mb-5 text-sm" style={{ color: "var(--color-texte2)" }}>
+          Gagnez en visibilité et décrochez plus de clients.
+        </p>
 
-        {/* Formule actuelle */}
-        <div className="mb-4 rounded-2xl border border-bordure bg-carte p-5">
-          <p className="text-sm text-texte2">Ma formule actuelle</p>
-          <p className="mt-1 text-xl" style={{ fontFamily: "var(--font-titre)" }}>
-            {formuleMensuelle ? "Mensuelle" : "Gratuit"}
+        {chargement ? (
+          <p className="pt-8 text-center text-sm" style={{ color: "var(--color-texte2)" }}>
+            Chargement...
           </p>
-          <p className="mt-1 text-sm text-texte2">
-            {formuleMensuelle
-              ? "Abonnement mensuel actif."
-              : "Commission au resultat (preleve a chaque intervention)."}
-          </p>
-        </div>
-
-        {/* Mise en avant */}
-        <div className="mb-6 rounded-2xl border border-bordure p-5" style={{ backgroundColor: "var(--color-secondaire)" }}>
-          <p className="font-medium">Booster votre visibilite</p>
-          <p className="mt-1 text-sm text-texte2">
-            Mise en avant — etre en tete de liste.
-          </p>
-          {estEnAvant ? (
-            <p className="mt-3 text-sm" style={{ color: "var(--color-vert)" }}>
-              ✓ Mise en avant active
-            </p>
-          ) : (
-            <button
-              type="button"
-              className="mt-3 rounded-xl px-4 py-2 text-sm text-white"
-              style={{ backgroundColor: "var(--color-orange)" }}
-              onClick={() => alert("Le paiement de la mise en avant sera disponible bientot.")}
-            >
-              Activer (+ 3 000 FCFA / mois)
-            </button>
-          )}
-        </div>
-
-        {/* Historique */}
-        <h2 className="mb-3 text-lg">Historique des paiements</h2>
-        {historique.length > 0 ? (
-          <div className="space-y-2">
-            {historique.map((l) => (
-              <div key={l.id} className="flex items-center justify-between rounded-xl border border-bordure bg-carte px-4 py-3">
-                <div>
-                  <p className="text-sm font-medium">{l.libelle}</p>
-                  <p className="text-xs text-texte2">{new Date(l.date).toLocaleDateString("fr-FR")}</p>
-                </div>
-                <p className="text-sm font-medium" style={{ color: l.positif ? "var(--color-vert)" : "#C0392B" }}>
-                  {l.positif ? "+" : "−"} {l.montant.toLocaleString("fr-FR")} FCFA
-                </p>
-              </div>
-            ))}
-          </div>
         ) : (
-          <div className="rounded-2xl border border-dashed border-bordure bg-carte p-6 text-center">
-            <p className="text-sm text-texte2">Aucun paiement pour le moment.</p>
+          <div className="flex flex-col gap-4">
+            {/* ===== Formule actuelle ===== */}
+            <div
+              className="rounded-2xl border p-4"
+              style={{ background: "var(--color-carte)", borderColor: "var(--color-vert)" }}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-base font-semibold" style={{ color: "var(--color-texte)" }}>
+                  Formule actuelle : Gratuit
+                </span>
+                <span
+                  className="rounded-full px-2.5 py-0.5 text-xs font-medium"
+                  style={{ background: "rgba(76,140,90,0.12)", color: "var(--color-vert)" }}
+                >
+                  Active
+                </span>
+              </div>
+              <p className="mt-1.5 text-sm" style={{ color: "var(--color-texte2)" }}>
+                Vous ne payez qu'une commission de 10 % sur chaque intervention réglée. Aucun frais fixe.
+              </p>
+            </div>
+
+            {/* ===== Choix du moyen de paiement (uniquement si dispo) ===== */}
+            {ABONNEMENTS_DISPONIBLES && (!aAbonnement || !estEnAvant) && (
+              <div className="flex gap-2">
+                {(["wave", "orange_money"] as MethodePaiement[]).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMethode(m)}
+                    className="flex-1 rounded-xl border py-2.5 text-sm font-medium"
+                    style={{
+                      borderColor: methode === m ? "var(--color-orange)" : "var(--color-bordure)",
+                      background: methode === m ? "var(--color-secondaire)" : "var(--color-carte)",
+                      color: methode === m ? "var(--color-orange)" : "var(--color-texte2)",
+                    }}
+                  >
+                    {m === "wave" ? "Wave" : "Orange Money"}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {erreur && (
+              <p className="rounded-xl border p-3 text-sm" style={{ borderColor: "#e0b4b4", color: "#a33", background: "rgba(200,60,60,0.06)" }}>
+                {erreur}
+              </p>
+            )}
+
+            {/* ===== Les deux offres ===== */}
+            {OFFRES.map((o) => {
+              const actif = o.type === "monthly_subscription" ? aAbonnement : estEnAvant;
+              const dateFin = o.type === "monthly_subscription" ? finAbo : finAvant;
+              const enCours = action === o.type;
+              return (
+                <div
+                  key={o.type}
+                  className="rounded-2xl border p-4"
+                  style={{ background: "var(--color-carte)", borderColor: "var(--color-bordure)" }}
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-base font-semibold" style={{ color: "var(--color-texte)" }}>
+                      {o.titre}
+                    </span>
+                    <span className="text-sm font-semibold" style={{ color: "var(--color-orange)" }}>
+                      {prixLisible(o.prix)}
+                      <span className="font-normal" style={{ color: "var(--color-texte2)" }}>
+                        {" "}/ mois
+                      </span>
+                    </span>
+                  </div>
+
+                  <ul className="mt-3 flex flex-col gap-1.5">
+                    {o.avantages.map((a) => (
+                      <li key={a} className="flex items-start gap-2 text-sm" style={{ color: "var(--color-texte2)" }}>
+                        <span className="mt-0.5 shrink-0" style={{ color: "var(--color-vert)" }}>
+                          <IconeCheck taille={16} />
+                        </span>
+                        {a}
+                      </li>
+                    ))}
+                  </ul>
+
+                  {/* --- Etat / action --- */}
+                  <div className="mt-4">
+                    {actif ? (
+                      <div
+                        className="rounded-xl border py-2.5 text-center text-sm font-medium"
+                        style={{ borderColor: "var(--color-vert)", color: "var(--color-vert)", background: "rgba(76,140,90,0.08)" }}
+                      >
+                        Actif{dateFin ? ` jusqu'au ${dateLisible(dateFin)}` : ""}
+                      </div>
+                    ) : ABONNEMENTS_DISPONIBLES ? (
+                      <button
+                        type="button"
+                        onClick={() => lancerSouscription(o.type)}
+                        disabled={enCours}
+                        className="w-full rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                        style={{ background: "var(--color-orange)" }}
+                      >
+                        {enCours ? "Traitement..." : `Souscrire (${prixLisible(o.prix)} / mois)`}
+                      </button>
+                    ) : (
+                      <div
+                        className="rounded-xl border border-dashed py-2.5 text-center text-sm font-medium"
+                        style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte2)" }}
+                      >
+                        Bientôt disponible
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {!ABONNEMENTS_DISPONIBLES && (
+              <p className="px-1 text-center text-xs" style={{ color: "var(--color-texte2)" }}>
+                Les abonnements arrivent bientôt. En attendant, profitez de la formule gratuite —
+                vous ne payez que lorsque vous êtes payé.
+              </p>
+            )}
           </div>
         )}
       </div>
-
-      <NavArtisan />
     </div>
   );
 }
