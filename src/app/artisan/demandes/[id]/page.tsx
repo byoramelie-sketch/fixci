@@ -74,70 +74,68 @@ export default function DetailDemandeArtisan() {
       }
       setUid(auth.user.id);
 
-      // Demande + budget.
-      const { data } = await supabase
-        .from("service_requests")
-        .select(
-          "id, description, neighborhood, preferred_slot, contact_phone, urgency, status, budget_fcfa, client_id"
-        )
-        .eq("id", idDemande)
-        .single();
+      // ===== Chargement en 2 vagues PARALLELES (au lieu d'un enchainement) =====
+      const uid = auth.user.id;
 
+      // Vague 1 : requetes qui ne dependent que de l'identifiant de la demande.
+      const [srRes, offresRes, jobsRes] = await Promise.all([
+        supabase
+          .from("service_requests")
+          .select(
+            "id, description, neighborhood, preferred_slot, contact_phone, urgency, status, budget_fcfa, client_id"
+          )
+          .eq("id", idDemande)
+          .single(),
+        supabase
+          .from("quotes")
+          .select("id, amount_fcfa, status")
+          .eq("request_id", idDemande)
+          .eq("artisan_id", uid)
+          .order("created_at", { ascending: false })
+          .limit(1),
+        supabase
+          .from("jobs")
+          .select("id")
+          .eq("request_id", idDemande)
+          .eq("artisan_id", uid)
+          .limit(1),
+      ]);
+
+      const data = srRes.data;
       if (!data) {
         setChargement(false);
         return;
       }
-
-      // Nom du client.
-      const { data: client } = await supabase
-        .from("profiles")
-        .select("name")
-        .eq("id", data.client_id)
-        .single();
-
-      // Offre eventuelle deja envoyee par cet artisan pour cette demande.
-      const { data: offres } = await supabase
-        .from("quotes")
-        .select("id, amount_fcfa, status")
-        .eq("request_id", idDemande)
-        .eq("artisan_id", auth.user.id)
-        .order("created_at", { ascending: false })
-        .limit(1);
-      const offre = (offres ?? [])[0] as
+      const offre = (offresRes.data ?? [])[0] as
         | { id: string; amount_fcfa: number; status: string }
         | undefined;
-
-      // Chantier (job) eventuel lie a cette demande, pour suivre son avancement.
-      const { data: jobs } = await supabase
-        .from("jobs")
-        .select("id")
-        .eq("request_id", idDemande)
-        .eq("artisan_id", auth.user.id)
-        .limit(1);
-      const job = (jobs ?? [])[0] as { id: string } | undefined;
+      const job = (jobsRes.data ?? [])[0] as { id: string } | undefined;
       if (job) setJobId(job.id);
 
-      // Paiement eventuel : savoir si l'acompte est regle + le net a recevoir.
+      // Vague 2 : requetes qui dependent de la vague 1, lancees en parallele.
+      const [clientRes, payRes, avisRes] = await Promise.all([
+        supabase.from("profiles").select("name").eq("id", data.client_id).single(),
+        job
+          ? supabase.from("payments").select("status, artisan_payout_fcfa").eq("job_id", job.id).limit(1)
+          : Promise.resolve({ data: null }),
+        job
+          ? supabase
+              .from("reviews")
+              .select("id")
+              .eq("job_id", job.id)
+              .eq("author_id", uid)
+              .eq("direction", "artisan_to_client")
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
+
+      const client = clientRes.data;
       if (job) {
-        const { data: pay } = await supabase
-          .from("payments")
-          .select("status, artisan_payout_fcfa")
-          .eq("job_id", job.id)
-          .limit(1);
-        const p = (pay ?? [])[0] as
+        const p = (payRes.data ?? [])[0] as
           | { status: string; artisan_payout_fcfa: number }
           | undefined;
         if (p) setPaiement({ statut: p.status, net: p.artisan_payout_fcfa });
-
-        // L'artisan a-t-il deja note le client pour ce chantier ?
-        const { data: avis } = await supabase
-          .from("reviews")
-          .select("id")
-          .eq("job_id", job.id)
-          .eq("author_id", auth.user.id)
-          .eq("direction", "artisan_to_client")
-          .maybeSingle();
-        setDejaNote(!!avis);
+        setDejaNote(!!avisRes.data);
       }
 
       setDetail({

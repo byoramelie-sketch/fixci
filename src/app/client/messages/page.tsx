@@ -39,29 +39,28 @@ export default function MessagesClient() {
         last_message_at: string | null;
       }[];
 
-      // Noms des artisans.
+      // Noms des artisans + apercus (dernier message) : en PARALLELE.
       const ids = [...new Set(liste.map((c) => c.artisan_id))];
-      const noms: Record<string, string> = {};
-      if (ids.length) {
-        const { data: profs } = await supabase.from("profiles").select("id, name").in("id", ids);
-        (profs ?? []).forEach((p: { id: string; name: string }) => {
-          noms[p.id] = p.name ?? "Artisan";
-        });
-      }
-
-      // Apercu = dernier message de chaque conversation.
       const convIds = liste.map((c) => c.id);
-      const apercus: Record<string, string> = {};
-      if (convIds.length) {
-        const { data: msgs } = await supabase
+      const [profsRes, msgsRes] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select("id, name")
+          .in("id", ids.length ? ids : ["00000000-0000-0000-0000-000000000000"]),
+        supabase
           .from("messages")
           .select("conversation_id, content, created_at")
-          .in("conversation_id", convIds)
-          .order("created_at", { ascending: false });
-        (msgs ?? []).forEach((m: { conversation_id: string; content: string }) => {
-          if (!apercus[m.conversation_id]) apercus[m.conversation_id] = m.content;
-        });
-      }
+          .in("conversation_id", convIds.length ? convIds : ["00000000-0000-0000-0000-000000000000"])
+          .order("created_at", { ascending: false }),
+      ]);
+      const noms: Record<string, string> = {};
+      (profsRes.data ?? []).forEach((p: { id: string; name: string }) => {
+        noms[p.id] = p.name ?? "Artisan";
+      });
+      const apercus: Record<string, string> = {};
+      (msgsRes.data ?? []).forEach((m: { conversation_id: string; content: string }) => {
+        if (!apercus[m.conversation_id]) apercus[m.conversation_id] = m.content;
+      });
 
       setConvs(
         liste.map((c) => ({

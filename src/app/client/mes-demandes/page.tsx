@@ -70,14 +70,17 @@ export default async function MesDemandes() {
     );
   }
 
-  // ===== Demandes du client (recentes d'abord) =====
-  const { data: demandesData, error } = await supabase
-    .from("service_requests")
-    .select("id, description, status, urgency, neighborhood, created_at, trade_id")
-    .eq("client_id", user.id)
-    .order("created_at", { ascending: false });
+  // ===== Demandes du client + noms des metiers, charges EN PARALLELE =====
+  const [demandesRes, tradesRes] = await Promise.all([
+    supabase
+      .from("service_requests")
+      .select("id, description, status, urgency, neighborhood, created_at, trade_id")
+      .eq("client_id", user.id)
+      .order("created_at", { ascending: false }),
+    supabase.from("trades").select("id, name"),
+  ]);
 
-  if (error) {
+  if (demandesRes.error) {
     return (
       <p className="pt-10 text-center text-sm" style={{ color: "var(--color-texte2)" }}>
         Impossible de charger vos demandes pour le moment.
@@ -85,12 +88,9 @@ export default async function MesDemandes() {
     );
   }
 
-  const demandes = (demandesData ?? []) as Demande[];
-
-  // ===== Noms des metiers (pour afficher le service de chaque demande) =====
-  const { data: tradesData } = await supabase.from("trades").select("id, name");
+  const demandes = (demandesRes.data ?? []) as Demande[];
   const nomParTrade = new Map<string, string>(
-    (tradesData ?? []).map((t: { id: string; name: string }): [string, string] => [t.id, t.name])
+    (tradesRes.data ?? []).map((t: { id: string; name: string }): [string, string] => [t.id, t.name])
   );
 
   return (

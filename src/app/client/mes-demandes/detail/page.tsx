@@ -95,73 +95,63 @@ function Contenu() {
     }
     setUid(auth.user.id);
 
-    // Demande (et verification qu'elle appartient bien au client).
-    const { data: d } = await supabase
-      .from("service_requests")
-      .select("id, description, status, budget_fcfa, trade_id, client_id")
-      .eq("id", idDemande)
-      .single();
+    // ===== Chargement en 2 vagues PARALLELES (au lieu d'un enchainement) =====
+    const uid = auth.user.id;
 
-    if (!d || d.client_id !== auth.user.id) {
+    // Vague 1 : requetes qui ne dependent que de l'identifiant de la demande.
+    const [srRes, quotesRes, jobsRes] = await Promise.all([
+      supabase
+        .from("service_requests")
+        .select("id, description, status, budget_fcfa, trade_id, client_id")
+        .eq("id", idDemande)
+        .single(),
+      supabase
+        .from("quotes")
+        .select("id, artisan_id, amount_fcfa, description, status")
+        .eq("request_id", idDemande)
+        .in("status", ["proposed", "accepted"])
+        .order("created_at", { ascending: false }),
+      supabase.from("jobs").select("id").eq("request_id", idDemande).limit(1),
+    ]);
+
+    const d = srRes.data;
+    if (!d || d.client_id !== uid) {
       setDemande(null);
       setChargement(false);
       return;
     }
 
-    // Nom du service.
-    const { data: trade } = await supabase
-      .from("trades")
-      .select("name")
-      .eq("id", d.trade_id)
-      .single();
-
-    // Offres recues pour cette demande (en attente ou acceptee).
-    const { data: q } = await supabase
-      .from("quotes")
-      .select("id, artisan_id, amount_fcfa, description, status")
-      .eq("request_id", idDemande)
-      .in("status", ["proposed", "accepted"])
-      .order("created_at", { ascending: false });
-    const lignes = q ?? [];
-
-    // Noms des artisans qui ont propose.
-    const idsArtisans = [...new Set(lignes.map((l) => l.artisan_id))];
-    const noms: Record<string, string> = {};
-    if (idsArtisans.length > 0) {
-      const { data: profs } = await supabase
-        .from("profiles")
-        .select("id, name")
-        .in("id", idsArtisans);
-      (profs ?? []).forEach((p) => {
-        noms[p.id] = p.name ?? "Artisan";
-      });
-    }
-
-    // Chantier (job) eventuel lie a cette demande, pour le suivi et la validation.
-    const { data: jobs } = await supabase
-      .from("jobs")
-      .select("id")
-      .eq("request_id", idDemande)
-      .limit(1);
-    const job = (jobs ?? [])[0] as { id: string } | undefined;
+    const lignes = quotesRes.data ?? [];
+    const job = (jobsRes.data ?? [])[0] as { id: string } | undefined;
     setJobId(job ? job.id : null);
 
-    // Paiement eventuel lie au chantier (acompte, solde, statut, net...).
-    setPaiement(job ? await lirePaiement(job.id) : null);
+    // Vague 2 : requetes qui dependent de la vague 1, lancees en parallele.
+    const idsArtisans = [...new Set(lignes.map((l) => l.artisan_id))];
+    const [tradeRes, profsRes, paiementRes, avisRes] = await Promise.all([
+      supabase.from("trades").select("name").eq("id", d.trade_id).single(),
+      supabase
+        .from("profiles")
+        .select("id, name")
+        .in("id", idsArtisans.length ? idsArtisans : ["00000000-0000-0000-0000-000000000000"]),
+      job ? lirePaiement(job.id) : Promise.resolve(null),
+      job
+        ? supabase
+            .from("reviews")
+            .select("id")
+            .eq("job_id", job.id)
+            .eq("author_id", uid)
+            .eq("direction", "client_to_artisan")
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
 
-    // Le client a-t-il deja note l'artisan pour ce chantier ?
-    if (job) {
-      const { data: avis } = await supabase
-        .from("reviews")
-        .select("id")
-        .eq("job_id", job.id)
-        .eq("author_id", auth.user.id)
-        .eq("direction", "client_to_artisan")
-        .maybeSingle();
-      setDejaNote(!!avis);
-    } else {
-      setDejaNote(false);
-    }
+    const trade = tradeRes.data;
+    const noms: Record<string, string> = {};
+    (profsRes.data ?? []).forEach((p) => {
+      noms[p.id] = p.name ?? "Artisan";
+    });
+    setPaiement(paiementRes);
+    setDejaNote(job ? !!avisRes.data : false);
 
     setDemande({
       id: d.id,
