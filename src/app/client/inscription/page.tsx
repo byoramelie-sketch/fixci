@@ -3,9 +3,10 @@
 
 // =========================================================================
 // Inscription client (rapide) : nom, telephone, mot de passe.
-//   - Cree le compte, le profil (role client) et la ligne "clients".
-//   - Reprise automatique : si le numero a deja un compte, on se reconnecte
-//     et on continue (meme logique que l'inscription artisan).
+//   - Messages d'erreur clairs, champ par champ (nom, numero, mot de passe).
+//   - "Ce numero est deja utilise" explicite si le numero existe deja.
+//   - Reprise automatique : si le numero + mot de passe correspondent a un
+//     compte existant, on se reconnecte et on continue.
 //   - A la fin : direction l'accueil client (/client).
 // =========================================================================
 
@@ -14,6 +15,7 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
 import { BoutonRetour } from "@/components/icones";
+import { messageErreurAuth } from "@/lib/erreurs";
 
 export default function InscriptionClient() {
   const router = useRouter();
@@ -23,22 +25,41 @@ export default function InscriptionClient() {
   const [telephone, setTelephone] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
   const [chargement, setChargement] = useState(false);
+
+  // Erreurs : une par champ + une generale (numero deja utilise, reseau...).
+  const [errNom, setErrNom] = useState<string | null>(null);
+  const [errTel, setErrTel] = useState<string | null>(null);
+  const [errMdp, setErrMdp] = useState<string | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
 
-  // ===== Validation simple du formulaire =====
-  function formulaireValide() {
-    return nom.trim().length > 1 && telephone.trim().length >= 8 && motDePasse.length >= 6;
+  // ===== Verifier les champs et afficher un message clair sous chacun =====
+  function champsValides(): boolean {
+    let ok = true;
+    setErrNom(null);
+    setErrTel(null);
+    setErrMdp(null);
+    setErreur(null);
+
+    if (nom.trim().length < 2) {
+      setErrNom("Veuillez entrer votre nom complet.");
+      ok = false;
+    }
+    if (telephone.replace(/\D/g, "").length < 8) {
+      setErrTel("Numéro de téléphone invalide.");
+      ok = false;
+    }
+    if (motDePasse.length < 6) {
+      setErrMdp("Le mot de passe doit contenir au moins 6 caractères.");
+      ok = false;
+    }
+    return ok;
   }
 
   // ===== Soumission =====
   async function soumettre() {
-    if (!formulaireValide()) {
-      setErreur("Verifiez vos informations (nom, numero, mot de passe d'au moins 6 caracteres).");
-      return;
-    }
-    setChargement(true);
-    setErreur(null);
+    if (!champsValides()) return;
 
+    setChargement(true);
     try {
       // ===== Identifiant interne derive du numero =====
       const email = `${telephone.replace(/\D/g, "")}@example.com`;
@@ -52,37 +73,38 @@ export default function InscriptionClient() {
       });
 
       if (errSignUp) {
-        // Compte deja existant : on tente de se reconnecter pour reprendre.
         const dejaInscrit =
           errSignUp.message.toLowerCase().includes("already") ||
           errSignUp.message.toLowerCase().includes("registered") ||
           errSignUp.status === 422;
 
         if (dejaInscrit) {
+          // On tente de reconnecter (reprise). Si le mot de passe ne correspond
+          // pas, c'est que le numero est deja pris : message clair.
           const { data: signIn, error: errSignIn } =
             await supabase.auth.signInWithPassword({ email, password: motDePasse });
           if (errSignIn) {
-            throw new Error(
-              "Ce numero a deja un compte. Si c'est le votre, verifiez votre mot de passe. Sinon, utilisez un autre numero."
-            );
+            setErrTel("Ce numéro est déjà utilisé. Connectez-vous, ou utilisez un autre numéro.");
+            return;
           }
           userId = signIn.user?.id;
         } else {
-          throw errSignUp;
+          setErreur(messageErreurAuth(errSignUp.message));
+          return;
         }
       } else {
         userId = signUp.user?.id;
       }
 
-      if (!userId) throw new Error("Compte introuvable. Reessayez.");
+      if (!userId) {
+        setErreur("Compte introuvable. Veuillez réessayer.");
+        return;
+      }
 
       // ===== Creer / mettre a jour le profil (role client) =====
       const { error: errProfil } = await supabase
         .from("profiles")
-        .upsert(
-          { id: userId, name: nom, phone: telephone, role: "client" },
-          { onConflict: "id" }
-        );
+        .upsert({ id: userId, name: nom, phone: telephone, role: "client" }, { onConflict: "id" });
       if (errProfil) throw errProfil;
 
       // ===== Creer la ligne "clients" (les autres colonnes ont un defaut) =====
@@ -93,8 +115,8 @@ export default function InscriptionClient() {
 
       // ===== Termine : direction l'accueil client =====
       router.push("/client");
-    } catch (e) {
-      setErreur(e instanceof Error ? e.message : "Une erreur est survenue.");
+    } catch {
+      setErreur("Une erreur est survenue. Veuillez réessayer.");
     } finally {
       setChargement(false);
     }
@@ -115,36 +137,49 @@ export default function InscriptionClient() {
           Trouvez un artisan de confiance, pres de chez vous.
         </p>
 
+        {/* Erreur generale (reseau, etc.) */}
+        {erreur && (
+          <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{erreur}</p>
+        )}
+
         <div className="space-y-4">
-          <Champ label="Nom complet">
+          <Champ label="Nom complet" erreur={errNom}>
             <input
               className="champ"
+              style={errNom ? { borderColor: "#dc2626" } : undefined}
               value={nom}
-              onChange={(e) => setNom(e.target.value)}
+              onChange={(e) => {
+                setNom(e.target.value);
+                if (errNom) setErrNom(null);
+              }}
               placeholder="Awa Diallo"
             />
           </Champ>
-          <Champ label="Numero de telephone / WhatsApp">
+          <Champ label="Numero de telephone / WhatsApp" erreur={errTel}>
             <input
               className="champ"
+              style={errTel ? { borderColor: "#dc2626" } : undefined}
               value={telephone}
-              onChange={(e) => setTelephone(e.target.value)}
+              onChange={(e) => {
+                setTelephone(e.target.value);
+                if (errTel) setErrTel(null);
+              }}
               placeholder="07 07 12 34 56"
               inputMode="tel"
             />
           </Champ>
-          <Champ label="Mot de passe (6 caracteres minimum)">
+          <Champ label="Mot de passe (6 caracteres minimum)" erreur={errMdp}>
             <input
               className="champ"
+              style={errMdp ? { borderColor: "#dc2626" } : undefined}
               type="password"
               value={motDePasse}
-              onChange={(e) => setMotDePasse(e.target.value)}
+              onChange={(e) => {
+                setMotDePasse(e.target.value);
+                if (errMdp) setErrMdp(null);
+              }}
             />
           </Champ>
-
-          {erreur && (
-            <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{erreur}</p>
-          )}
 
           <Bouton onClick={soumettre} disabled={chargement}>
             {chargement ? "Creation..." : "Creer mon compte"}
@@ -176,12 +211,21 @@ export default function InscriptionClient() {
   );
 }
 
-// ===== Champ de formulaire (label + contenu) =====
-function Champ({ label, children }: { label: string; children: React.ReactNode }) {
+// ===== Champ de formulaire (label + contenu + message d'erreur) =====
+function Champ({
+  label,
+  erreur,
+  children,
+}: {
+  label: string;
+  erreur?: string | null;
+  children: React.ReactNode;
+}) {
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-medium">{label}</span>
       {children}
+      {erreur && <span className="mt-1 block text-xs text-red-600">{erreur}</span>}
     </label>
   );
 }

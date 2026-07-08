@@ -5,18 +5,18 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
+import { messageErreurAuth } from "@/lib/erreurs";
 import type { Trade, Commune } from "@/lib/types";
 
 // =========================================================================
 // Inscription artisan — 3 etapes (cahier des charges A1) :
-//   1. Infos perso (nom, telephone, mot de passe, photo)
+//   1. Infos perso (nom, telephone, mot de passe)
 //   2. Metiers + zones d'intervention
 //   3. Verification : televersement de la CNI
-// A la fin : profil cree, statut "en attente de verification".
 //
-// NOUVEAU : reprise automatique. Si le numero a deja un compte (inscription
-// precedente interrompue), on se reconnecte et on reprend le dossier au lieu
-// de bloquer l'utilisateur avec l'erreur 422.
+// Messages d'erreur clairs, champ par champ. Si le numero est deja utilise,
+// on renvoie a l'etape 1 avec un message explicite sur le champ numero.
+// Reprise automatique conservee (numero + bon mot de passe = on reconnecte).
 // =========================================================================
 
 export default function InscriptionArtisan() {
@@ -25,7 +25,6 @@ export default function InscriptionArtisan() {
 
   const [etape, setEtape] = useState(1);
   const [chargement, setChargement] = useState(false);
-  const [erreur, setErreur] = useState<string | null>(null);
 
   // Referentiels charges depuis la base
   const [metiers, setMetiers] = useState<Trade[]>([]);
@@ -42,6 +41,13 @@ export default function InscriptionArtisan() {
 
   // Etape 3
   const [fichierCni, setFichierCni] = useState<File | null>(null);
+
+  // Erreurs par champ + generales
+  const [errNom, setErrNom] = useState<string | null>(null);
+  const [errTel, setErrTel] = useState<string | null>(null);
+  const [errMdp, setErrMdp] = useState<string | null>(null);
+  const [errEtape2, setErrEtape2] = useState<string | null>(null);
+  const [erreur, setErreur] = useState<string | null>(null);
 
   // Charger metiers + communes au montage
   useEffect(() => {
@@ -62,40 +68,55 @@ export default function InscriptionArtisan() {
   }, [supabase]);
 
   function basculer(liste: string[], id: string): string[] {
-    return liste.includes(id)
-      ? liste.filter((x) => x !== id)
-      : [...liste, id];
+    return liste.includes(id) ? liste.filter((x) => x !== id) : [...liste, id];
   }
 
-  // Validation par etape avant de continuer
-  function etape1Valide() {
-    return nom.trim().length > 1 && telephone.trim().length >= 8 && motDePasse.length >= 6;
+  // ===== Etape 1 : valider les champs avec messages clairs =====
+  function validerEtape1() {
+    setErrNom(null);
+    setErrTel(null);
+    setErrMdp(null);
+    let ok = true;
+    if (nom.trim().length < 2) {
+      setErrNom("Veuillez entrer votre nom complet.");
+      ok = false;
+    }
+    if (telephone.replace(/\D/g, "").length < 8) {
+      setErrTel("Numéro de téléphone invalide.");
+      ok = false;
+    }
+    if (motDePasse.length < 6) {
+      setErrMdp("Le mot de passe doit contenir au moins 6 caractères.");
+      ok = false;
+    }
+    if (ok) setEtape(2);
   }
-  function etape2Valide() {
-    return metiersChoisis.length > 0 && communesChoisies.length > 0;
+
+  // ===== Etape 2 : au moins un metier et une zone =====
+  function validerEtape2() {
+    if (metiersChoisis.length === 0 || communesChoisies.length === 0) {
+      setErrEtape2("Choisissez au moins un métier et une zone d'intervention.");
+      return;
+    }
+    setErrEtape2(null);
+    setEtape(3);
   }
 
   // ===== Soumission finale (etape 3) =====
   async function soumettre() {
-    // ===== Verification : la CNI est obligatoire =====
+    // La CNI est obligatoire.
     if (!fichierCni) {
-      setErreur("Ajoutez une photo de votre piece d'identite.");
+      setErreur("Ajoutez une photo de votre pièce d'identité.");
       return;
     }
     setChargement(true);
     setErreur(null);
 
     try {
-      // ===== Identifiant interne derive du numero de telephone =====
-      // On fabrique un e-mail interne "{numero}@example.com" (domaine reserve
-      // aux tests, accepte par la validation de Supabase).
       const email = `${telephone.replace(/\D/g, "")}@example.com`;
 
-      // ===== Etape 1 : creer le compte, OU le recuperer s'il existe deja =====
-      // On tente d'abord la creation. Si le numero est deja pris (inscription
-      // precedente interrompue), on bascule en connexion pour reprendre le dossier.
+      // ===== Creer le compte, OU le recuperer s'il existe deja =====
       let userId: string | undefined;
-
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
         email,
         password: motDePasse,
@@ -103,52 +124,48 @@ export default function InscriptionArtisan() {
       });
 
       if (errSignUp) {
-        // ===== Le compte existe deja : on tente de se reconnecter =====
-        // Supabase signale par message ou par le code 422 que l'utilisateur existe.
         const dejaInscrit =
           errSignUp.message.toLowerCase().includes("already") ||
           errSignUp.message.toLowerCase().includes("registered") ||
           errSignUp.status === 422;
 
         if (dejaInscrit) {
-          // On se connecte avec le meme numero + mot de passe pour reprendre.
+          // On tente de reconnecter. Si le mot de passe ne correspond pas,
+          // le numero est deja pris : on renvoie a l'etape 1 avec le message.
           const { data: signIn, error: errSignIn } =
             await supabase.auth.signInWithPassword({ email, password: motDePasse });
-
           if (errSignIn) {
-            // Mauvais mot de passe : on guide l'utilisateur clairement.
-            throw new Error(
-              "Ce numero a deja un compte. Si c'est le votre, verifiez votre mot de passe. Sinon, utilisez un autre numero."
-            );
+            setErrTel("Ce numéro est déjà utilisé. Connectez-vous, ou utilisez un autre numéro.");
+            setEtape(1);
+            return;
           }
           userId = signIn.user?.id;
         } else {
-          // Toute autre erreur de creation : on la remonte telle quelle.
-          throw errSignUp;
+          setErreur(messageErreurAuth(errSignUp.message));
+          return;
         }
       } else {
-        // ===== Creation reussie : on recupere l'identifiant du nouveau compte =====
         userId = signUp.user?.id;
       }
 
-      if (!userId) throw new Error("Compte introuvable. Reessayez.");
+      if (!userId) {
+        setErreur("Compte introuvable. Veuillez réessayer.");
+        return;
+      }
 
-      // ===== Creer / mettre a jour le profil (upsert, sans dependre d'un trigger) =====
+      // ===== Profil (upsert) =====
       const { error: errProfil } = await supabase
         .from("profiles")
-        .upsert(
-          { id: userId, name: nom, phone: telephone, role: "artisan" },
-          { onConflict: "id" }
-        );
+        .upsert({ id: userId, name: nom, phone: telephone, role: "artisan" }, { onConflict: "id" });
       if (errProfil) throw errProfil;
 
-      // ===== Creer / garder la fiche artisan (upsert pour eviter un doublon a la reprise) =====
+      // ===== Fiche artisan (upsert) =====
       const { error: errArtisan } = await supabase
         .from("artisans")
         .upsert({ id: userId, status: "pending" }, { onConflict: "id" });
       if (errArtisan) throw errArtisan;
 
-      // ===== Lier metiers et communes (on efface d'abord pour eviter les doublons a la reprise) =====
+      // ===== Metiers et zones (on efface d'abord pour eviter les doublons) =====
       await supabase.from("artisan_trades").delete().eq("artisan_id", userId);
       await supabase.from("artisan_trades").insert(
         metiersChoisis.map((trade_id) => ({ artisan_id: userId, trade_id }))
@@ -158,7 +175,7 @@ export default function InscriptionArtisan() {
         communesChoisies.map((commune_id) => ({ artisan_id: userId, commune_id }))
       );
 
-      // ===== Televerser la CNI dans le bucket prive, sous "{userId}/cni.ext" =====
+      // ===== Televerser la CNI (bucket prive) =====
       const ext = fichierCni.name.split(".").pop() ?? "jpg";
       const chemin = `${userId}/cni.${ext}`;
       const { error: errUpload } = await supabase.storage
@@ -166,9 +183,7 @@ export default function InscriptionArtisan() {
         .upload(chemin, fichierCni, { upsert: true });
       if (errUpload) throw errUpload;
 
-      // ===== Enregistrer le document de verification (efface l'ancien d'abord pour la reprise) =====
-      // On supprime un eventuel document du meme type avant d'inserer, ce qui evite
-      // les doublons si l'utilisateur reprend une inscription interrompue.
+      // ===== Enregistrer le document de verification =====
       await supabase
         .from("verification_documents")
         .delete()
@@ -176,19 +191,12 @@ export default function InscriptionArtisan() {
         .eq("type", "national_id");
       const { error: errDoc } = await supabase
         .from("verification_documents")
-        .insert({
-          artisan_id: userId,
-          type: "national_id",
-          file_path: chemin,
-          status: "pending",
-        });
+        .insert({ artisan_id: userId, type: "national_id", file_path: chemin, status: "pending" });
       if (errDoc) throw errDoc;
 
-      // ===== Termine : direction l'ecran "dossier en cours de verification" =====
       router.push("/artisan/verification");
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Une erreur est survenue.";
-      setErreur(message);
+    } catch {
+      setErreur("Une erreur est survenue lors de l'envoi. Veuillez réessayer.");
     } finally {
       setChargement(false);
     }
@@ -214,10 +222,7 @@ export default function InscriptionArtisan() {
             <div
               key={n}
               className="h-1.5 flex-1 rounded-full"
-              style={{
-                backgroundColor:
-                  n <= etape ? "var(--color-orange)" : "var(--color-bordure)",
-              }}
+              style={{ backgroundColor: n <= etape ? "var(--color-orange)" : "var(--color-bordure)" }}
             />
           ))}
         </div>
@@ -225,34 +230,44 @@ export default function InscriptionArtisan() {
         {/* ----- ETAPE 1 : infos perso ----- */}
         {etape === 1 && (
           <div className="space-y-4">
-            <Champ label="Nom complet">
+            <Champ label="Nom complet" erreur={errNom}>
               <input
                 className="champ"
+                style={errNom ? { borderColor: "#dc2626" } : undefined}
                 value={nom}
-                onChange={(e) => setNom(e.target.value)}
+                onChange={(e) => {
+                  setNom(e.target.value);
+                  if (errNom) setErrNom(null);
+                }}
                 placeholder="Konan Kouassi"
               />
             </Champ>
-            <Champ label="Numero de telephone / WhatsApp">
+            <Champ label="Numero de telephone / WhatsApp" erreur={errTel}>
               <input
                 className="champ"
+                style={errTel ? { borderColor: "#dc2626" } : undefined}
                 value={telephone}
-                onChange={(e) => setTelephone(e.target.value)}
+                onChange={(e) => {
+                  setTelephone(e.target.value);
+                  if (errTel) setErrTel(null);
+                }}
                 placeholder="07 07 12 34 56"
                 inputMode="tel"
               />
             </Champ>
-            <Champ label="Mot de passe (6 caracteres minimum)">
+            <Champ label="Mot de passe (6 caracteres minimum)" erreur={errMdp}>
               <input
                 className="champ"
+                style={errMdp ? { borderColor: "#dc2626" } : undefined}
                 type="password"
                 value={motDePasse}
-                onChange={(e) => setMotDePasse(e.target.value)}
+                onChange={(e) => {
+                  setMotDePasse(e.target.value);
+                  if (errMdp) setErrMdp(null);
+                }}
               />
             </Champ>
-            <Bouton onClick={() => setEtape(2)} disabled={!etape1Valide()}>
-              Continuer
-            </Bouton>
+            <Bouton onClick={validerEtape1}>Continuer</Bouton>
           </div>
         )}
 
@@ -266,7 +281,10 @@ export default function InscriptionArtisan() {
                   <Puce
                     key={m.id}
                     active={metiersChoisis.includes(m.id)}
-                    onClick={() => setMetiersChoisis(basculer(metiersChoisis, m.id))}
+                    onClick={() => {
+                      setMetiersChoisis(basculer(metiersChoisis, m.id));
+                      if (errEtape2) setErrEtape2(null);
+                    }}
                   >
                     {m.name}
                   </Puce>
@@ -280,20 +298,24 @@ export default function InscriptionArtisan() {
                   <Puce
                     key={c.id}
                     active={communesChoisies.includes(c.id)}
-                    onClick={() => setCommunesChoisies(basculer(communesChoisies, c.id))}
+                    onClick={() => {
+                      setCommunesChoisies(basculer(communesChoisies, c.id));
+                      if (errEtape2) setErrEtape2(null);
+                    }}
                   >
                     {c.name}
                   </Puce>
                 ))}
               </div>
             </div>
+            {errEtape2 && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{errEtape2}</p>
+            )}
             <div className="flex gap-3">
               <Bouton variante="secondaire" onClick={() => setEtape(1)}>
                 Retour
               </Bouton>
-              <Bouton onClick={() => setEtape(3)} disabled={!etape2Valide()}>
-                Continuer
-              </Bouton>
+              <Bouton onClick={validerEtape2}>Continuer</Bouton>
             </div>
           </div>
         )}
@@ -310,13 +332,14 @@ export default function InscriptionArtisan() {
                 className="champ"
                 type="file"
                 accept="image/*,.pdf"
-                onChange={(e) => setFichierCni(e.target.files?.[0] ?? null)}
+                onChange={(e) => {
+                  setFichierCni(e.target.files?.[0] ?? null);
+                  if (erreur) setErreur(null);
+                }}
               />
             </Champ>
             {erreur && (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-                {erreur}
-              </p>
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{erreur}</p>
             )}
             <div className="flex gap-3">
               <Bouton variante="secondaire" onClick={() => setEtape(2)}>
@@ -345,11 +368,20 @@ export default function InscriptionArtisan() {
   );
 }
 
-function Champ({ label, children }: { label: string; children: React.ReactNode }) {
+function Champ({
+  label,
+  erreur,
+  children,
+}: {
+  label: string;
+  erreur?: string | null;
+  children: React.ReactNode;
+}) {
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-medium">{label}</span>
       {children}
+      {erreur && <span className="mt-1 block text-xs text-red-600">{erreur}</span>}
     </label>
   );
 }

@@ -4,16 +4,15 @@
 // =========================================================================
 // Connexion partagee (artisan / client / admin).
 //   - On peut taper SON NUMERO ou SON E-MAIL.
-//   - Apres connexion, on lit le role dans "profiles" et on redirige :
-//       admin   -> /admin
-//       artisan -> /artisan
-//       client  -> /client
+//   - Messages d'erreur clairs : champ vide, identifiants incorrects...
+//   - Apres connexion, on lit le role dans "profiles" et on redirige.
 // =========================================================================
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
+import { messageErreurAuth } from "@/lib/erreurs";
 
 export default function Connexion() {
   const router = useRouter();
@@ -22,11 +21,13 @@ export default function Connexion() {
   const [identifiant, setIdentifiant] = useState(""); // numero OU e-mail
   const [motDePasse, setMotDePasse] = useState("");
   const [chargement, setChargement] = useState(false);
-  const [erreur, setErreur] = useState<string | null>(null);
+
+  // Erreurs : une par champ + une generale (identifiants, reseau...).
+  const [errIdentifiant, setErrIdentifiant] = useState<string | null>(null);
+  const [errMotDePasse, setErrMotDePasse] = useState<string | null>(null);
+  const [errGenerale, setErrGenerale] = useState<string | null>(null);
 
   // ===== Transformer l'identifiant saisi en e-mail de connexion =====
-  // S'il contient "@", c'est deja un e-mail (ex: admin@fixci.com) -> on le garde.
-  // Sinon c'est un numero -> on reconstruit l'e-mail interne {numero}@example.com.
   function versEmail(saisie: string): string {
     const valeur = saisie.trim();
     if (valeur.includes("@")) return valeur;
@@ -35,25 +36,43 @@ export default function Connexion() {
 
   // ===== Tentative de connexion =====
   async function seConnecter() {
+    // 1. Repartir sur des erreurs propres.
+    setErrIdentifiant(null);
+    setErrMotDePasse(null);
+    setErrGenerale(null);
+
+    // 2. Verifier les champs vides AVANT d'appeler le serveur.
+    let valide = true;
+    if (!identifiant.trim()) {
+      setErrIdentifiant("Veuillez entrer votre numéro ou e-mail.");
+      valide = false;
+    }
+    if (!motDePasse) {
+      setErrMotDePasse("Veuillez entrer votre mot de passe.");
+      valide = false;
+    }
+    if (!valide) return;
+
     setChargement(true);
-    setErreur(null);
     try {
-      // 1. Se connecter avec l'e-mail derive + le mot de passe.
+      // 3. Se connecter avec l'e-mail derive + le mot de passe.
       const email = versEmail(identifiant);
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password: motDePasse,
       });
-      if (error) throw new Error("Identifiant ou mot de passe incorrect.");
+      if (error) {
+        setErrGenerale(messageErreurAuth(error.message));
+        return;
+      }
 
-      // 2. Lire le role pour savoir vers quel espace rediriger.
+      // 4. Lire le role pour savoir vers quel espace rediriger.
       const { data: profile } = await supabase
         .from("profiles")
         .select("role")
         .eq("id", data.user.id)
         .single();
 
-      // 3. Rediriger selon le role.
       const role = profile?.role;
       if (role === "admin") {
         router.push("/admin");
@@ -62,13 +81,12 @@ export default function Connexion() {
       } else if (role === "client") {
         router.push("/client");
       } else {
-        // Role inconnu ou profil manquant : on deconnecte par securite.
         await supabase.auth.signOut();
-        throw new Error("Compte sans espace attribue. Contactez le support.");
+        setErrGenerale("Compte sans espace attribué. Contactez le support.");
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Connexion impossible.";
-      setErreur(msg);
+    } catch {
+      // Erreur reseau ou inattendue.
+      setErrGenerale("Connexion impossible. Vérifiez votre connexion internet.");
     } finally {
       setChargement(false);
     }
@@ -86,36 +104,56 @@ export default function Connexion() {
         <div className="rounded-2xl border border-bordure bg-carte p-6">
           <h1 className="mb-5 text-xl">Connexion</h1>
 
+          {/* --- Erreur generale (identifiants, reseau...) --- */}
+          {errGenerale && (
+            <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              {errGenerale}
+            </p>
+          )}
+
+          {/* --- Champ identifiant --- */}
           <label className="mb-4 block">
             <span className="mb-1.5 block text-sm font-medium">
               Numero de telephone ou e-mail
             </span>
             <input
               className="champ"
+              style={errIdentifiant ? { borderColor: "#dc2626" } : undefined}
               type="text"
               value={identifiant}
-              onChange={(e) => setIdentifiant(e.target.value)}
+              onChange={(e) => {
+                setIdentifiant(e.target.value);
+                if (errIdentifiant) setErrIdentifiant(null);
+              }}
               placeholder="07 07 12 34 56"
               autoComplete="username"
             />
+            {errIdentifiant && (
+              <span className="mt-1 block text-xs text-red-600">{errIdentifiant}</span>
+            )}
           </label>
 
+          {/* --- Champ mot de passe --- */}
           <label className="mb-5 block">
             <span className="mb-1.5 block text-sm font-medium">Mot de passe</span>
             <input
               className="champ"
+              style={errMotDePasse ? { borderColor: "#dc2626" } : undefined}
               type="password"
               value={motDePasse}
-              onChange={(e) => setMotDePasse(e.target.value)}
+              onChange={(e) => {
+                setMotDePasse(e.target.value);
+                if (errMotDePasse) setErrMotDePasse(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !chargement) seConnecter();
+              }}
               autoComplete="current-password"
             />
+            {errMotDePasse && (
+              <span className="mt-1 block text-xs text-red-600">{errMotDePasse}</span>
+            )}
           </label>
-
-          {erreur && (
-            <p className="mb-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-              {erreur}
-            </p>
-          )}
 
           <Bouton onClick={seConnecter} disabled={chargement}>
             {chargement ? "Connexion..." : "Se connecter"}
