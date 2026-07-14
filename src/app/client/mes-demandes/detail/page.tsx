@@ -7,8 +7,12 @@
 //   - Affiche : service, statut, budget propose, description.
 //   - Liste les OFFRES recues des artisans (table quotes) :
 //       . pour chaque offre "en attente" -> ACCEPTER ou REFUSER
-//       . accepter cree le chantier (table jobs) et passe la demande en
-//         "devis accepte".
+//       . accepter cree le chantier (via la fonction securisee).
+//   - DEUX FACONS DE REGLER :
+//       . dans l'application : acompte 40 % puis solde 60 % (commission
+//         prelevee automatiquement, artisan paye apres validation) ;
+//       . en especes : le client paie l'artisan de la main a la main, puis
+//         valide simplement le travail. L'artisan reversera la commission.
 // Ecran enfant -> fleche retour en haut.
 // =========================================================================
 
@@ -82,6 +86,7 @@ function Contenu() {
   const [action, setAction] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [modePaiement, setModePaiement] = useState<"app" | "especes">("app");
   const [paiement, setPaiement] = useState<Paiement | null>(null);
   const [methode, setMethode] = useState<MethodePaiement>("wave");
   const [dejaNote, setDejaNote] = useState(false);
@@ -111,7 +116,7 @@ function Contenu() {
         .eq("request_id", idDemande)
         .in("status", ["proposed", "accepted"])
         .order("created_at", { ascending: false }),
-      supabase.from("jobs").select("id").eq("request_id", idDemande).limit(1),
+      supabase.from("jobs").select("id, payment_mode").eq("request_id", idDemande).limit(1),
     ]);
 
     const d = srRes.data;
@@ -121,9 +126,16 @@ function Contenu() {
       return;
     }
 
-    const lignes = quotesRes.data ?? [];
-    const job = (jobsRes.data ?? [])[0] as { id: string } | undefined;
+    const lignes = (quotesRes.data ?? []) as {
+      id: string;
+      artisan_id: string;
+      amount_fcfa: number;
+      description: string | null;
+      status: string;
+    }[];
+    const job = (jobsRes.data ?? [])[0] as { id: string; payment_mode: string } | undefined;
     setJobId(job ? job.id : null);
+    setModePaiement(job?.payment_mode === "especes" ? "especes" : "app");
 
     // Vague 2 : requetes qui dependent de la vague 1, lancees en parallele.
     const idsArtisans = [...new Set(lignes.map((l) => l.artisan_id))];
@@ -147,7 +159,7 @@ function Contenu() {
 
     const trade = tradeRes.data;
     const noms: Record<string, string> = {};
-    (profsRes.data ?? []).forEach((p) => {
+    ((profsRes.data ?? []) as { id: string; name: string | null }[]).forEach((p) => {
       noms[p.id] = p.name ?? "Artisan";
     });
     setPaiement(paiementRes);
@@ -178,42 +190,17 @@ function Contenu() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idDemande]);
 
-  // ===== Accepter une offre : cree le chantier =====
+  // ===== Accepter une offre : cree le chantier (fonction securisee) =====
   async function accepter(offre: Offre) {
     if (!uid || !demande) return;
     setAction(true);
     setErreur(null);
     try {
-      // 1. Marquer cette offre comme acceptee.
-      const { error: e1 } = await supabase
-        .from("quotes")
-        .update({ status: "accepted" })
-        .eq("id", offre.id);
-      if (e1) throw new Error(e1.message);
-
-      // 2. Creer le chantier (job) au prix convenu.
-      const { error: e2 } = await supabase.from("jobs").insert({
-        request_id: demande.id,
-        quote_id: offre.id,
-        client_id: uid,
-        artisan_id: offre.artisanId,
-        agreed_price_fcfa: offre.montant,
-        status: "accepted",
+      const { error } = await supabase.rpc("fixci_repondre_devis", {
+        p_quote_id: offre.id,
+        p_accepter: true,
       });
-      if (e2) throw new Error(e2.message);
-
-      // 3. Refuser les autres offres encore en attente sur cette demande.
-      const autres = offres.filter((o) => o.id !== offre.id && o.statut === "proposed");
-      for (const o of autres) {
-        await supabase.from("quotes").update({ status: "declined" }).eq("id", o.id);
-      }
-
-      // 4. Passer la demande en "devis accepte".
-      await supabase
-        .from("service_requests")
-        .update({ status: "quote_accepted" })
-        .eq("id", demande.id);
-
+      if (error) throw new Error(error.message);
       await charger();
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Action impossible.");
@@ -227,10 +214,10 @@ function Contenu() {
     setAction(true);
     setErreur(null);
     try {
-      const { error } = await supabase
-        .from("quotes")
-        .update({ status: "declined" })
-        .eq("id", offre.id);
+      const { error } = await supabase.rpc("fixci_repondre_devis", {
+        p_quote_id: offre.id,
+        p_accepter: false,
+      });
       if (error) throw new Error(error.message);
       await charger();
     } catch (e) {
@@ -262,6 +249,38 @@ function Contenu() {
     setErreur(null);
     try {
       await finaliserPaiement(jobId, methode);
+      await charger();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Action impossible.");
+    } finally {
+      setAction(false);
+    }
+  }
+
+  // ===== Choisir de regler en ESPECES (main a la main) =====
+  async function choisirEspeces() {
+    if (!jobId) return;
+    setAction(true);
+    setErreur(null);
+    try {
+      const { error } = await supabase.rpc("fixci_choisir_especes", { p_job_id: jobId });
+      if (error) throw new Error(error.message);
+      await charger();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Action impossible.");
+    } finally {
+      setAction(false);
+    }
+  }
+
+  // ===== Valider le travail regle en especes =====
+  async function validerEspeces() {
+    if (!jobId) return;
+    setAction(true);
+    setErreur(null);
+    try {
+      const { error } = await supabase.rpc("fixci_valider_especes", { p_job_id: jobId });
+      if (error) throw new Error(error.message);
       await charger();
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Action impossible.");
@@ -336,6 +355,7 @@ function Contenu() {
 
   const offresEnAttente = offres.filter((o) => o.statut === "proposed");
   const offreAcceptee = offres.find((o) => o.statut === "accepted");
+  const enEspeces = modePaiement === "especes";
 
   return (
     <div className="flex flex-col gap-5">
@@ -384,12 +404,12 @@ function Contenu() {
             {offreAcceptee.artisanNom} — {prixLisible(offreAcceptee.montant)}
           </span>
 
-          {/* --- Etape 1 : acompte 40 % (au demarrage) --- */}
-          {demande.status === "quote_accepted" && !paiement && (
+          {/* --- Etape 1 : choisir comment regler (app ou especes) --- */}
+          {demande.status === "quote_accepted" && !paiement && !enEspeces && (
             <>
               <span className="text-xs" style={{ color: "var(--color-texte2)" }}>
-                Pour lancer l'intervention, reglez l'acompte de 40 %. L'artisan est paye a la fin,
-                une fois le travail valide.
+                Pour lancer l&apos;intervention, reglez l&apos;acompte de 40 %. L&apos;artisan est
+                paye a la fin, une fois le travail valide.
               </span>
               {selecteurMethode}
               <button
@@ -399,31 +419,54 @@ function Contenu() {
                 className="mt-1 w-full rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-50"
                 style={{ background: "var(--color-orange)" }}
               >
-                Payer l'acompte ({prixLisible(Math.round(offreAcceptee.montant * 0.4))})
+                Payer l&apos;acompte ({prixLisible(Math.round(offreAcceptee.montant * 0.4))})
               </button>
               <span className="text-[10px]" style={{ color: "var(--color-texte2)" }}>
                 Paiement simule (demo) — aucun vrai prelevement.
               </span>
+
+              {/* Alternative : payer l'artisan en especes */}
+              <button
+                type="button"
+                onClick={choisirEspeces}
+                disabled={action}
+                className="mt-1 w-full rounded-xl border py-2 text-xs font-medium disabled:opacity-50"
+                style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte2)" }}
+              >
+                Je prefere payer l&apos;artisan en especes
+              </button>
             </>
           )}
+
+          {/* --- Mode especes : rappel --- */}
+          {enEspeces && demande.status === "quote_accepted" && (
+            <span
+              className="rounded-lg px-3 py-2 text-xs"
+              style={{ background: "var(--color-secondaire)", color: "var(--color-texte2)" }}
+            >
+              Reglement en especes : vous paierez {prixLisible(offreAcceptee.montant)} directement a
+              l&apos;artisan. Vous validerez le travail ici une fois termine.
+            </span>
+          )}
+
           {demande.status === "quote_accepted" && paiement && (
             <span className="text-xs font-medium" style={{ color: "var(--color-vert)" }}>
-              Acompte paye ({prixLisible(paiement.deposit_fcfa)}). En attente du demarrage de l'artisan.
+              Acompte paye ({prixLisible(paiement.deposit_fcfa)}). En attente du demarrage de l&apos;artisan.
             </span>
           )}
 
           {/* --- En route --- */}
           {demande.status === "en_route" && (
             <span className="text-xs font-medium" style={{ color: "var(--color-or)" }}>
-              L'artisan est en route.
+              L&apos;artisan est en route.
             </span>
           )}
 
-          {/* --- Etape 2 : valider le travail + payer le solde 60 % --- */}
-          {demande.status === "completed" && (
+          {/* --- Etape 2 (mode app) : valider + payer le solde 60 % --- */}
+          {demande.status === "completed" && !enEspeces && (
             <>
               <span className="text-xs" style={{ color: "var(--color-texte2)" }}>
-                L'artisan indique avoir termine. Validez le travail et reglez le solde de 60 %.
+                L&apos;artisan indique avoir termine. Validez le travail et reglez le solde de 60 %.
               </span>
               {selecteurMethode}
               <button
@@ -438,10 +481,31 @@ function Contenu() {
             </>
           )}
 
-          {/* --- Termine + paye --- */}
+          {/* --- Etape 2 (mode especes) : valider le travail --- */}
+          {demande.status === "completed" && enEspeces && (
+            <>
+              <span className="text-xs" style={{ color: "var(--color-texte2)" }}>
+                L&apos;artisan indique avoir termine. Si le travail est fait et que vous l&apos;avez
+                regle en especes, validez ci-dessous.
+              </span>
+              <button
+                type="button"
+                onClick={validerEspeces}
+                disabled={action}
+                className="mt-1 w-full rounded-xl py-2.5 text-sm font-semibold text-white disabled:opacity-50"
+                style={{ background: "var(--color-vert)" }}
+              >
+                Valider le travail
+              </button>
+            </>
+          )}
+
+          {/* --- Termine --- */}
           {demande.status === "validated" && (
             <span className="text-xs font-medium" style={{ color: "var(--color-vert)" }}>
-              Travail valide et paye. Merci d'avoir utilise FixCI !
+              {enEspeces
+                ? "Travail valide. Merci d'avoir utilise FixCI !"
+                : "Travail valide et paye. Merci d'avoir utilise FixCI !"}
             </span>
           )}
 
@@ -494,7 +558,7 @@ function Contenu() {
               className="rounded-xl border border-dashed p-4 text-center text-sm"
               style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte2)" }}
             >
-              Aucune offre pour le moment. Vous serez prevenu des qu'un artisan repond.
+              Aucune offre pour le moment. Vous serez prevenu des qu&apos;un artisan repond.
             </p>
           ) : (
             offresEnAttente.map((o) => (

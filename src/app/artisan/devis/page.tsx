@@ -147,20 +147,24 @@ function DevisContenu() {
       }));
 
       // 1. Creer le devis detaille (quote "proposed") -> alimente le paiement.
-      const { error: errQuote } = await supabase.from("quotes").insert({
-        request_id: requestId,
-        artisan_id: uid,
-        amount_fcfa: total,
-        description: titre.trim(),
-        title: titre.trim(),
-        lines: lignesJson,
-        materials_fcfa: fournitures,
-        labor_fcfa: mainOeuvre,
-        validity_days: Math.max(1, Math.round(nombre(validite)) || 30),
-        terms: conditions.trim() || null,
-        source: "manuel",
-        status: "proposed",
-      });
+      const { data: quoteCree, error: errQuote } = await supabase
+        .from("quotes")
+        .insert({
+          request_id: requestId,
+          artisan_id: uid,
+          amount_fcfa: total,
+          description: titre.trim(),
+          title: titre.trim(),
+          lines: lignesJson,
+          materials_fcfa: fournitures,
+          labor_fcfa: mainOeuvre,
+          validity_days: Math.max(1, Math.round(nombre(validite)) || 30),
+          terms: conditions.trim() || null,
+          source: "manuel",
+          status: "proposed",
+        })
+        .select("id")
+        .single();
       if (errQuote) throw new Error(errQuote.message);
 
       // 2. Passer la demande en "devis en cours".
@@ -171,15 +175,21 @@ function DevisContenu() {
           .eq("id", requestId);
       }
 
-      // 3. Prevenir le client dans le chat.
+      // 3. Envoyer le devis DANS la conversation (le client le voit en detail
+      //    et peut l'accepter sans quitter le chat).
       if (clientId) {
         const convId = await ouvrirConversation(requestId, clientId, uid);
         if (convId) {
           await supabase.from("messages").insert({
             conversation_id: convId,
             sender_id: uid,
-            content: `Devis envoye : ${titre.trim()} - ${prix(total)}`,
+            content: `Devis : ${titre.trim()} - ${prix(total)}`,
+            quote_id: quoteCree?.id ?? null,
           });
+          // Relier le devis a la conversation.
+          if (quoteCree?.id) {
+            await supabase.from("quotes").update({ conversation_id: convId }).eq("id", quoteCree.id);
+          }
         }
       }
 

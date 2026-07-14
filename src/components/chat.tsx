@@ -4,10 +4,13 @@
 // =========================================================================
 // Fil de discussion reutilisable (client <-> artisan).
 //   - Messages texte (les miens a droite, ceux de l'autre a gauche).
-//   - PROPOSITIONS DE PRIX dans la discussion : chacun peut proposer un
-//     montant ; l'autre peut Accepter / Refuser ; une nouvelle proposition
-//     remplace la precedente. Accepter cree le devis + le chantier (via la
-//     fonction securisee fixci_repondre_offre).
+//   - PROPOSITIONS DE PRIX : chacun propose un montant, l'autre Accepte /
+//     Refuse. Une nouvelle proposition remplace la precedente.
+//   - DEVIS DETAILLES : quand l'artisan envoie un devis, il s'affiche DANS la
+//     conversation avec tout son detail (postes, sous-totaux, total). Le
+//     client l'accepte ou le refuse SANS quitter le chat.
+//   - Accepter (prix ou devis) cree le devis + le chantier, et alimente le
+//     flux de paiement existant.
 //   - Rafraichissement automatique toutes les 4 s.
 // =========================================================================
 
@@ -21,6 +24,28 @@ type Message = {
   created_at: string;
   offer_amount_fcfa: number | null;
   offer_status: string | null;
+  quote_id: string | null;
+};
+
+type LigneDevis = {
+  description: string;
+  quantite: number;
+  unite: string;
+  prix_unitaire: number;
+  total: number;
+  type: string;
+};
+
+type Devis = {
+  id: string;
+  title: string | null;
+  amount_fcfa: number;
+  lines: LigneDevis[];
+  materials_fcfa: number;
+  labor_fcfa: number;
+  validity_days: number;
+  terms: string | null;
+  status: string;
 };
 
 function heure(iso: string) {
@@ -33,6 +58,8 @@ function prix(n: number) {
 export function Chat({ conversationId, monId }: { conversationId: string; monId: string }) {
   const supabase = createClient();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [devis, setDevis] = useState<Record<string, Devis>>({});
+  const [ouverts, setOuverts] = useState<Record<string, boolean>>({});
   const [texte, setTexte] = useState("");
   const [montant, setMontant] = useState("");
   const [modeOffre, setModeOffre] = useState(false);
@@ -44,10 +71,25 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
   async function charger() {
     const { data } = await supabase
       .from("messages")
-      .select("id, sender_id, content, created_at, offer_amount_fcfa, offer_status")
+      .select("id, sender_id, content, created_at, offer_amount_fcfa, offer_status, quote_id")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true });
-    setMessages((data ?? []) as Message[]);
+    const liste = (data ?? []) as Message[];
+    setMessages(liste);
+
+    // Charger le detail des devis references dans la conversation.
+    const ids = [...new Set(liste.map((m) => m.quote_id).filter(Boolean))] as string[];
+    if (ids.length) {
+      const { data: qs } = await supabase
+        .from("quotes")
+        .select("id, title, amount_fcfa, lines, materials_fcfa, labor_fcfa, validity_days, terms, status")
+        .in("id", ids);
+      const parId: Record<string, Devis> = {};
+      ((qs ?? []) as Devis[]).forEach((q) => {
+        parId[q.id] = q;
+      });
+      setDevis(parId);
+    }
     setChargement(false);
   }
 
@@ -107,7 +149,7 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
     }
   }
 
-  // ===== Repondre a une proposition (accepter / refuser) =====
+  // ===== Repondre a une proposition de prix =====
   async function repondre(messageId: string, accepter: boolean) {
     if (envoi) return;
     setEnvoi(true);
@@ -126,7 +168,28 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
     }
   }
 
-  const dealConclu = messages.some((m) => m.offer_status === "accepted");
+  // ===== Repondre a un DEVIS depuis la conversation =====
+  async function repondreDevis(quoteId: string, accepter: boolean) {
+    if (envoi) return;
+    setEnvoi(true);
+    setErreur(null);
+    try {
+      const { error } = await supabase.rpc("fixci_repondre_devis", {
+        p_quote_id: quoteId,
+        p_accepter: accepter,
+      });
+      if (error) throw new Error(error.message);
+      await charger();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Action impossible.");
+    } finally {
+      setEnvoi(false);
+    }
+  }
+
+  const dealConclu =
+    messages.some((m) => m.offer_status === "accepted") ||
+    Object.values(devis).some((d) => d.status === "accepted");
 
   return (
     <div className="flex h-[68vh] flex-col">
@@ -144,6 +207,128 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
           <div className="flex flex-col gap-2">
             {messages.map((m) => {
               const aMoi = m.sender_id === monId;
+
+              // ----- DEVIS DETAILLE -----
+              if (m.quote_id && devis[m.quote_id]) {
+                const d = devis[m.quote_id];
+                const ouvert = ouverts[d.id] ?? false;
+                return (
+                  <div
+                    key={m.id}
+                    className="mx-auto w-full max-w-[92%] rounded-2xl border p-3"
+                    style={{ borderColor: "var(--color-orange)", background: "var(--color-carte)" }}
+                  >
+                    <span className="block text-center text-xs" style={{ color: "var(--color-texte2)" }}>
+                      {aMoi ? "Votre devis" : "Devis recu"}
+                    </span>
+                    {d.title && (
+                      <span
+                        className="mt-0.5 block text-center text-sm font-semibold"
+                        style={{ color: "var(--color-texte)" }}
+                      >
+                        {d.title}
+                      </span>
+                    )}
+                    <span
+                      className="mt-1 block text-center text-xl font-bold"
+                      style={{ color: "var(--color-orange)" }}
+                    >
+                      {prix(d.amount_fcfa)}
+                    </span>
+
+                    {/* Voir / masquer le detail */}
+                    {d.lines?.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setOuverts((o) => ({ ...o, [d.id]: !ouvert }))}
+                        className="mx-auto mt-1.5 block text-xs font-medium underline"
+                        style={{ color: "var(--color-texte2)" }}
+                      >
+                        {ouvert ? "Masquer le detail" : `Voir le detail (${d.lines.length} postes)`}
+                      </button>
+                    )}
+
+                    {ouvert && d.lines?.length > 0 && (
+                      <div
+                        className="mt-2 border-t pt-2"
+                        style={{ borderColor: "var(--color-bordure)" }}
+                      >
+                        {d.lines.map((l, i) => (
+                          <div key={i} className="flex items-start justify-between gap-2 py-1">
+                            <span className="text-xs" style={{ color: "var(--color-texte)" }}>
+                              {l.description}
+                              <span className="block" style={{ color: "var(--color-texte2)" }}>
+                                {l.quantite} {l.unite} x {prix(l.prix_unitaire)}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-xs font-medium">{prix(l.total)}</span>
+                          </div>
+                        ))}
+                        <div
+                          className="mt-1 border-t pt-1.5 text-xs"
+                          style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte2)" }}
+                        >
+                          <div className="flex justify-between">
+                            <span>Fournitures</span>
+                            <span>{prix(d.materials_fcfa)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Main d&apos;oeuvre</span>
+                            <span>{prix(d.labor_fcfa)}</span>
+                          </div>
+                        </div>
+                        {d.terms && (
+                          <p className="mt-2 text-[11px]" style={{ color: "var(--color-texte2)" }}>
+                            {d.terms}
+                          </p>
+                        )}
+                        <p className="mt-1 text-[11px]" style={{ color: "var(--color-texte2)" }}>
+                          Valable {d.validity_days} jours.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Actions : seul le client (celui qui n'a pas envoye) repond */}
+                    {d.status === "proposed" && !aMoi && (
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => repondreDevis(d.id, false)}
+                          disabled={envoi}
+                          className="flex-1 rounded-lg border py-2 text-xs font-medium disabled:opacity-50"
+                          style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte)" }}
+                        >
+                          Refuser
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => repondreDevis(d.id, true)}
+                          disabled={envoi}
+                          className="flex-1 rounded-lg py-2 text-xs font-semibold text-white disabled:opacity-50"
+                          style={{ background: "var(--color-vert)" }}
+                        >
+                          Accepter le devis
+                        </button>
+                      </div>
+                    )}
+                    {d.status === "proposed" && aMoi && (
+                      <span className="mt-2 block text-center text-xs" style={{ color: "var(--color-texte2)" }}>
+                        En attente de la reponse du client...
+                      </span>
+                    )}
+                    {d.status === "accepted" && (
+                      <span className="mt-2 block text-center text-xs font-semibold" style={{ color: "var(--color-vert)" }}>
+                        Devis accepte — chantier cree
+                      </span>
+                    )}
+                    {d.status === "declined" && (
+                      <span className="mt-2 block text-center text-xs" style={{ color: "var(--color-texte2)" }}>
+                        Devis non retenu
+                      </span>
+                    )}
+                  </div>
+                );
+              }
 
               // ----- Proposition de prix -----
               if (m.offer_amount_fcfa != null) {
@@ -239,7 +424,7 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
           className="rounded-xl border py-2 text-center text-xs font-medium"
           style={{ borderColor: "var(--color-vert)", color: "var(--color-vert)", background: "rgba(76,140,90,0.08)" }}
         >
-          Prix convenu. Rendez-vous sur la demande pour payer l'acompte.
+          Prix convenu. Rendez-vous sur la demande pour payer l&apos;acompte.
         </p>
       ) : modeOffre ? (
         /* ===== Composer : proposition de prix ===== */
