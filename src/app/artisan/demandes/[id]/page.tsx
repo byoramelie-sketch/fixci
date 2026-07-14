@@ -6,7 +6,8 @@
 //   - Affiche : client (+ WhatsApp), description, lieu, creneau, et le BUDGET
 //     propose par le client s'il y en a un.
 //   - Selon l'avancement :
-//       . nouvelle / devis en cours -> FAIRE UNE OFFRE (prix + details) ou REFUSER
+//       . nouvelle / devis en cours -> FAIRE UNE OFFRE (prix + details),
+//         CREER UN DEVIS DETAILLE, ou REFUSER
 //       . devis accepte par le client -> demarrer (Je suis en route)
 //       . en route -> Intervention terminee
 //   - L'offre est enregistree dans `quotes` (montant en FCFA, statut "proposed").
@@ -365,7 +366,7 @@ export default function DetailDemandeArtisan() {
           </p>
         )}
 
-        {/* ===== PHASE 1 : faire une offre / refuser ===== */}
+        {/* ===== PHASE 1 : faire une offre / creer un devis / refuser ===== */}
         {phaseOffre && (
           <div className="rounded-2xl border border-bordure bg-carte p-4">
             <h2 className="mb-1 text-base">Votre offre</h2>
@@ -410,6 +411,17 @@ export default function DetailDemandeArtisan() {
             >
               {action ? "Envoi..." : monOffre ? "Mettre a jour mon offre" : "Envoyer mon offre"}
             </button>
+
+            {/* Alternative : monter un devis detaille (postes, sous-totaux, total) */}
+            <button
+              type="button"
+              onClick={() => router.push(`/artisan/devis?request=${detail.id}`)}
+              className="mb-2 w-full rounded-xl border py-3 text-sm font-medium"
+              style={{ borderColor: "var(--color-orange)", color: "var(--color-orange)" }}
+            >
+              Creer un devis detaille
+            </button>
+
             <button
               type="button"
               onClick={refuser}
