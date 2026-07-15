@@ -64,6 +64,13 @@ export default function DetailDemandeArtisan() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [paiement, setPaiement] = useState<{ statut: string; net: number } | null>(null);
   const [dejaNote, setDejaNote] = useState(false);
+  // Localisation precise du client : visible seulement une fois l'accord
+  // conclu (la base la protege : sans chantier, cette requete ne renvoie rien).
+  const [lieu, setLieu] = useState<{
+    address: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  } | null>(null);
 
   // ===== Chargement initial =====
   useEffect(() => {
@@ -114,7 +121,7 @@ export default function DetailDemandeArtisan() {
       if (job) setJobId(job.id);
 
       // Vague 2 : requetes qui dependent de la vague 1, lancees en parallele.
-      const [clientRes, payRes, avisRes] = await Promise.all([
+      const [clientRes, payRes, avisRes, lieuRes] = await Promise.all([
         supabase.from("profiles").select("name").eq("id", data.client_id).single(),
         job
           ? supabase.from("payments").select("status, artisan_payout_fcfa").eq("job_id", job.id).limit(1)
@@ -128,7 +135,21 @@ export default function DetailDemandeArtisan() {
               .eq("direction", "artisan_to_client")
               .maybeSingle()
           : Promise.resolve({ data: null }),
+        // La base ne renvoie l'adresse que si le chantier existe (accord conclu).
+        supabase
+          .from("request_locations")
+          .select("address, latitude, longitude")
+          .eq("request_id", idDemande)
+          .maybeSingle(),
       ]);
+
+      setLieu(
+        (lieuRes.data as {
+          address: string | null;
+          latitude: number | null;
+          longitude: number | null;
+        } | null) ?? null
+      );
 
       const client = clientRes.data;
       if (job) {
@@ -290,6 +311,15 @@ export default function DetailDemandeArtisan() {
   const phaseOffre = detail.status === "new" || detail.status === "quote_in_progress";
   const offreAcceptee = monOffre?.statut === "accepted" || detail.status === "quote_accepted";
 
+  // ===== Lien d'itineraire (Google Maps) =====
+  // Si le client a partage sa position GPS -> itineraire precis.
+  // Sinon -> on vise le quartier, c'est approximatif mais deja utile.
+  const destination =
+    lieu?.latitude != null && lieu?.longitude != null
+      ? `${lieu.latitude},${lieu.longitude}`
+      : encodeURIComponent(`${detail.neighborhood ?? ""} Abidjan`.trim());
+  const itineraire = `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
+
   return (
     <div className="min-h-screen bg-fond pb-24">
       <FiletTricolore />
@@ -334,6 +364,39 @@ export default function DetailDemandeArtisan() {
             <IconeLieu taille={15} /> {detail.neighborhood ?? "Non precisee"}
           </span>
         </Section>
+
+        {/* ===== Adresse precise + itineraire (accord conclu uniquement) ===== */}
+        {lieu && (lieu.address || (lieu.latitude != null && lieu.longitude != null)) && (
+          <div className="mb-4">
+            <p className="mb-1 text-xs uppercase tracking-wide text-texte2">
+              Comment trouver le client
+            </p>
+            <div
+              className="rounded-2xl border p-4"
+              style={{ borderColor: "var(--color-vert)", background: "var(--color-carte)" }}
+            >
+              {lieu.address && (
+                <p className="text-sm" style={{ color: "var(--color-texte)" }}>
+                  {lieu.address}
+                </p>
+              )}
+              <a
+                href={itineraire}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-semibold text-white"
+                style={{ backgroundColor: "var(--color-vert)" }}
+              >
+                <IconeLieu taille={16} /> Lancer l&apos;itineraire
+              </a>
+              <p className="mt-1.5 text-center text-[11px]" style={{ color: "var(--color-texte2)" }}>
+                {lieu.latitude != null
+                  ? "Position GPS partagee par le client."
+                  : "Itineraire approximatif (le client n'a pas partage sa position)."}
+              </p>
+            </div>
+          </div>
+        )}
         <Section titre="Creneau souhaite">{detail.preferredSlot ?? "Non precise"}</Section>
 
         {/* Budget propose par le client */}

@@ -4,9 +4,11 @@
 // =========================================================================
 // Formulaire interactif de demande de service (etape 2).
 //   - Champs : description (obligatoire), commune (obligatoire) + quartier,
-//     niveau d'urgence, telephone/WhatsApp (obligatoire), creneau souhaite.
-//   - A l'envoi : insere une ligne dans `service_requests` puis renvoie vers
-//     "Mes demandes" pour que le client voie aussitot sa demande.
+//     ADRESSE PRECISE (optionnelle) + position GPS, niveau d'urgence,
+//     telephone/WhatsApp (obligatoire), creneau souhaite, budget.
+//   - A l'envoi : insere une ligne dans `service_requests`, puis l'adresse
+//     precise dans `request_addresses` (table protegee : seul l'artisan
+//     RETENU pourra la lire, une fois le devis accepte).
 //   - Les photos seront ajoutees plus tard.
 // =========================================================================
 
@@ -46,12 +48,43 @@ export function FormulaireDemande({
   const [description, setDescription] = useState("");
   const [communeId, setCommuneId] = useState("");
   const [quartier, setQuartier] = useState("");
+  const [adresse, setAdresse] = useState(""); // adresse precise / point de repere
   const [urgence, setUrgence] = useState("this_week");
   const [telephone, setTelephone] = useState(telephoneDefaut);
   const [creneau, setCreneau] = useState("");
   const [budget, setBudget] = useState(""); // prix propose par le client (optionnel)
   const [chargement, setChargement] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
+
+  // ===== Position GPS (optionnelle, pour l'itineraire de l'artisan) =====
+  const [position, setPosition] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsEnCours, setGpsEnCours] = useState(false);
+  const [gpsErreur, setGpsErreur] = useState<string | null>(null);
+
+  // ===== Recuperer la position actuelle du telephone =====
+  function utiliserMaPosition() {
+    setGpsErreur(null);
+    if (!("geolocation" in navigator)) {
+      setGpsErreur("Votre appareil ne permet pas la localisation.");
+      return;
+    }
+    setGpsEnCours(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGpsEnCours(false);
+      },
+      (err) => {
+        setGpsErreur(
+          err.code === err.PERMISSION_DENIED
+            ? "Localisation refusee. Autorisez-la, ou saisissez l'adresse a la main."
+            : "Position introuvable. Saisissez l'adresse a la main."
+        );
+        setGpsEnCours(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
 
   // ===== Envoi de la demande =====
   async function envoyer() {
@@ -76,22 +109,37 @@ export function FormulaireDemande({
 
     setChargement(true);
     try {
-      // Insertion de la demande. Les champs a valeur par defaut (status, photos)
-      // sont laisses a la base. assigned_artisan_id n'est rempli que si la
-      // demande vise un artisan precis.
-      const { error } = await supabase.from("service_requests").insert({
-        client_id: clientId,
-        trade_id: tradeId,
-        description: description.trim(),
-        commune_id: communeId,
-        neighborhood: quartier.trim() || null,
-        urgency: urgence,
-        contact_phone: telephone.trim(),
-        preferred_slot: creneau.trim() || null,
-        budget_fcfa: budgetFcfa,
-        assigned_artisan_id: artisanId ?? null,
-      });
+      // 1. Inserer la demande. Les champs a valeur par defaut (status, photos)
+      //    sont laisses a la base. assigned_artisan_id n'est rempli que si la
+      //    demande vise un artisan precis.
+      const { data: creee, error } = await supabase
+        .from("service_requests")
+        .insert({
+          client_id: clientId,
+          trade_id: tradeId,
+          description: description.trim(),
+          commune_id: communeId,
+          neighborhood: quartier.trim() || null,
+          urgency: urgence,
+          contact_phone: telephone.trim(),
+          preferred_slot: creneau.trim() || null,
+          budget_fcfa: budgetFcfa,
+          assigned_artisan_id: artisanId ?? null,
+        })
+        .select("id")
+        .single();
       if (error) throw new Error(error.message);
+
+      // 2. Enregistrer l'adresse precise a part (table protegee). Elle ne sera
+      //    lisible que par l'artisan retenu, une fois le devis accepte.
+      if (creee?.id && (adresse.trim() || position)) {
+        await supabase.from("request_addresses").insert({
+          request_id: creee.id,
+          address: adresse.trim() || null,
+          latitude: position?.lat ?? null,
+          longitude: position?.lng ?? null,
+        });
+      }
 
       // Succes : on va voir la demande dans "Mes demandes".
       router.push("/client/mes-demandes");
@@ -168,10 +216,57 @@ export function FormulaireDemande({
         />
       </label>
 
+      {/* ===== Adresse precise + position (optionnel) ===== */}
+      <div className="block">
+        <span className="mb-1.5 block text-sm font-medium" style={{ color: "var(--color-texte)" }}>
+          Adresse precise <span style={{ color: "var(--color-texte2)" }}>(optionnel)</span>
+        </span>
+        <input
+          className="champ"
+          type="text"
+          value={adresse}
+          onChange={(e) => setAdresse(e.target.value)}
+          placeholder="Ex : Rue des Jardins, immeuble bleu, en face de la pharmacie"
+        />
+
+        {/* Bouton position GPS */}
+        <button
+          type="button"
+          onClick={utiliserMaPosition}
+          disabled={gpsEnCours}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm font-medium disabled:opacity-60"
+          style={{
+            borderColor: position ? "var(--color-vert)" : "var(--color-bordure)",
+            color: position ? "var(--color-vert)" : "var(--color-texte2)",
+            background: "var(--color-carte)",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 21s-7-5.5-7-11a7 7 0 1 1 14 0c0 5.5-7 11-7 11z" />
+            <circle cx="12" cy="10" r="2.5" />
+          </svg>
+          {gpsEnCours
+            ? "Recherche de votre position..."
+            : position
+              ? "Position enregistree — appuyez pour actualiser"
+              : "Utiliser ma position actuelle"}
+        </button>
+
+        {gpsErreur && (
+          <span className="mt-1 block text-xs" style={{ color: "#b91c1c" }}>
+            {gpsErreur}
+          </span>
+        )}
+        <span className="mt-1 block text-xs" style={{ color: "var(--color-texte2)" }}>
+          Votre adresse reste <strong>privee</strong> : elle n&apos;est communiquee qu&apos;a
+          l&apos;artisan que vous aurez choisi, une fois le devis accepte.
+        </span>
+      </div>
+
       {/* ===== Urgence ===== */}
       <div className="block">
         <span className="mb-1.5 block text-sm font-medium" style={{ color: "var(--color-texte)" }}>
-          Niveau d'urgence
+          Niveau d&apos;urgence
         </span>
         <div className="flex gap-2">
           {URGENCES.map((u) => {
@@ -238,7 +333,7 @@ export function FormulaireDemande({
           placeholder="Ex : 15000"
         />
         <span className="mt-1 block text-xs" style={{ color: "var(--color-texte2)" }}>
-          Indiquez ce que vous pensez payer. L'artisan pourra accepter, proposer un
+          Indiquez ce que vous pensez payer. L&apos;artisan pourra accepter, proposer un
           autre prix ou refuser.
         </span>
       </label>
