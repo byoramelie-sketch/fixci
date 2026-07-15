@@ -366,6 +366,32 @@ export default function DetailDemandeArtisan() {
         </Section>
 
         {/* ===== Adresse precise + itineraire (accord conclu uniquement) ===== */}
+        {offreAcceptee && !lieu?.address && lieu?.latitude == null && (
+          <div className="mb-4">
+            <p className="mb-1 text-xs uppercase tracking-wide text-texte2">
+              Comment trouver le client
+            </p>
+            <div
+              className="rounded-2xl border p-4"
+              style={{ borderColor: "var(--color-bordure)", background: "var(--color-carte)" }}
+            >
+              <p className="text-sm" style={{ color: "var(--color-texte2)" }}>
+                Le client n&apos;a pas encore partage sa position. Demandez-lui dans la
+                conversation : il a un bouton <strong>Partager ma position</strong> sur sa demande.
+              </p>
+              <a
+                href={itineraire}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border py-2.5 text-sm font-medium"
+                style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte)" }}
+              >
+                <IconeLieu taille={16} /> Itineraire vers le quartier
+              </a>
+            </div>
+          </div>
+        )}
+
         {lieu && (lieu.address || (lieu.latitude != null && lieu.longitude != null)) && (
           <div className="mb-4">
             <p className="mb-1 text-xs uppercase tracking-wide text-texte2">

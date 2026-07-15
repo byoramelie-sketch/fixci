@@ -90,6 +90,18 @@ function Contenu() {
   const [paiement, setPaiement] = useState<Paiement | null>(null);
   const [methode, setMethode] = useState<MethodePaiement>("wave");
   const [dejaNote, setDejaNote] = useState(false);
+  // Localisation precise : le client peut la partager (ou la corriger) une
+  // fois l'accord conclu, pour que l'artisan puisse lancer son itineraire.
+  const [lieu, setLieu] = useState<{
+    address: string | null;
+    latitude: number | null;
+    longitude: number | null;
+  } | null>(null);
+  const [modeLieu, setModeLieu] = useState(false);
+  const [adresseTexte, setAdresseTexte] = useState("");
+  const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
+  const [gpsEnCours, setGpsEnCours] = useState(false);
+  const [gpsErreur, setGpsErreur] = useState<string | null>(null);
 
   // ===== Chargement (extrait pour pouvoir recharger apres une action) =====
   async function charger() {
@@ -139,7 +151,7 @@ function Contenu() {
 
     // Vague 2 : requetes qui dependent de la vague 1, lancees en parallele.
     const idsArtisans = [...new Set(lignes.map((l) => l.artisan_id))];
-    const [tradeRes, profsRes, paiementRes, avisRes] = await Promise.all([
+    const [tradeRes, profsRes, paiementRes, avisRes, lieuRes] = await Promise.all([
       supabase.from("trades").select("name").eq("id", d.trade_id).single(),
       supabase
         .from("profiles")
@@ -155,7 +167,24 @@ function Contenu() {
             .eq("direction", "client_to_artisan")
             .maybeSingle()
         : Promise.resolve({ data: null }),
+      supabase
+        .from("request_locations")
+        .select("address, latitude, longitude")
+        .eq("request_id", idDemande)
+        .maybeSingle(),
     ]);
+
+    const dejaLa =
+      (lieuRes.data as {
+        address: string | null;
+        latitude: number | null;
+        longitude: number | null;
+      } | null) ?? null;
+    setLieu(dejaLa);
+    if (dejaLa?.address) setAdresseTexte(dejaLa.address);
+    if (dejaLa?.latitude != null && dejaLa?.longitude != null) {
+      setGps({ lat: dejaLa.latitude, lng: dejaLa.longitude });
+    }
 
     const trade = tradeRes.data;
     const noms: Record<string, string> = {};
@@ -289,6 +318,60 @@ function Contenu() {
     }
   }
 
+  // ===== Recuperer la position GPS du telephone =====
+  function utiliserMaPosition() {
+    setGpsErreur(null);
+    if (!("geolocation" in navigator)) {
+      setGpsErreur("Votre appareil ne permet pas la localisation.");
+      return;
+    }
+    setGpsEnCours(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGps({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGpsEnCours(false);
+      },
+      (err) => {
+        setGpsEnCours(false);
+        setGpsErreur(
+          err.code === err.PERMISSION_DENIED
+            ? "Localisation refusee. Autorisez-la dans votre navigateur, ou decrivez le lieu."
+            : "Position introuvable. Reessayez dehors, ou decrivez le lieu."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }
+
+  // ===== Enregistrer la localisation pour l'artisan =====
+  async function enregistrerLieu() {
+    if (!adresseTexte.trim() && !gps) {
+      setGpsErreur("Ajoutez des reperes ou partagez votre position.");
+      return;
+    }
+    setAction(true);
+    setErreur(null);
+    try {
+      const { error } = await supabase.from("request_locations").upsert(
+        {
+          request_id: idDemande,
+          address: adresseTexte.trim() || null,
+          latitude: gps?.lat ?? null,
+          longitude: gps?.lng ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "request_id" }
+      );
+      if (error) throw new Error(error.message);
+      setModeLieu(false);
+      await charger();
+    } catch (e) {
+      setErreur(e instanceof Error ? e.message : "Enregistrement impossible.");
+    } finally {
+      setAction(false);
+    }
+  }
+
   // ===== Ouvrir (ou creer) la conversation avec un artisan =====
   async function discuter(artisanId: string) {
     if (!uid) return;
@@ -403,6 +486,110 @@ function Contenu() {
           <span className="text-sm" style={{ color: "var(--color-texte)" }}>
             {offreAcceptee.artisanNom} — {prixLisible(offreAcceptee.montant)}
           </span>
+
+          {/* ===== Aider l'artisan a vous trouver ===== */}
+          {demande.status !== "validated" && demande.status !== "cancelled" && (
+            <div
+              className="rounded-xl border p-3"
+              style={{
+                borderColor: lieu ? "var(--color-vert)" : "var(--color-orange)",
+                background: lieu ? "var(--color-carte)" : "rgba(224,123,57,0.06)",
+              }}
+            >
+              {!modeLieu ? (
+                <>
+                  <p className="text-xs font-medium" style={{ color: "var(--color-texte)" }}>
+                    {lieu ? "Votre position est partagee" : "Aidez l'artisan a vous trouver"}
+                  </p>
+                  {lieu?.address && (
+                    <p className="mt-0.5 text-xs" style={{ color: "var(--color-texte2)" }}>
+                      {lieu.address}
+                    </p>
+                  )}
+                  <p className="mt-0.5 text-xs" style={{ color: "var(--color-texte2)" }}>
+                    {lieu
+                      ? lieu.latitude != null
+                        ? "L'artisan peut lancer son itineraire directement vers vous."
+                        : "Ajoutez votre position GPS pour un itineraire precis."
+                      : "Sans reperes ni position, l'artisan risque de tourner en rond."}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setModeLieu(true)}
+                    className="mt-2 w-full rounded-lg border py-2 text-xs font-semibold"
+                    style={{
+                      borderColor: lieu ? "var(--color-bordure)" : "var(--color-orange)",
+                      color: lieu ? "var(--color-texte2)" : "var(--color-orange)",
+                    }}
+                  >
+                    {lieu ? "Modifier" : "Partager ma position"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="mb-2 text-xs font-medium" style={{ color: "var(--color-texte)" }}>
+                    Comment vous trouver
+                  </p>
+                  <textarea
+                    className="w-full rounded-lg border px-3 py-2 text-sm outline-none"
+                    style={{
+                      borderColor: "var(--color-bordure)",
+                      background: "var(--color-fond)",
+                      color: "var(--color-texte)",
+                    }}
+                    rows={2}
+                    value={adresseTexte}
+                    onChange={(e) => setAdresseTexte(e.target.value)}
+                    placeholder="Ex : en face de la pharmacie du Bonheur, immeuble bleu, 3e etage"
+                  />
+                  <button
+                    type="button"
+                    onClick={utiliserMaPosition}
+                    disabled={gpsEnCours}
+                    className="mt-2 w-full rounded-lg border py-2 text-xs font-medium disabled:opacity-60"
+                    style={{
+                      borderColor: gps ? "var(--color-vert)" : "var(--color-bordure)",
+                      color: gps ? "var(--color-vert)" : "var(--color-orange)",
+                    }}
+                  >
+                    {gpsEnCours
+                      ? "Localisation en cours..."
+                      : gps
+                        ? "Position enregistree ✓ (toucher pour refaire)"
+                        : "Utiliser ma position actuelle"}
+                  </button>
+                  {gpsErreur && (
+                    <p className="mt-1.5 text-xs" style={{ color: "var(--color-orange)" }}>
+                      {gpsErreur}
+                    </p>
+                  )}
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModeLieu(false);
+                        setGpsErreur(null);
+                      }}
+                      disabled={action}
+                      className="flex-1 rounded-lg border py-2 text-xs disabled:opacity-50"
+                      style={{ borderColor: "var(--color-bordure)", color: "var(--color-texte2)" }}
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="button"
+                      onClick={enregistrerLieu}
+                      disabled={action}
+                      className="flex-1 rounded-lg py-2 text-xs font-semibold text-white disabled:opacity-50"
+                      style={{ background: "var(--color-vert)" }}
+                    >
+                      {action ? "Envoi..." : "Envoyer a l'artisan"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* --- Etape 1 : choisir comment regler (app ou especes) --- */}
           {demande.status === "quote_accepted" && !paiement && !enEspeces && (
