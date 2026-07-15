@@ -521,6 +521,18 @@ export default function DetailDemandeArtisan() {
           </div>
         )}
 
+        {/* ===== Voir le recu (acompte puis recu final) ===== */}
+        {jobId && (paiement || detail.status === "validated") && (
+          <button
+            type="button"
+            onClick={() => router.push(`/recu?job=${jobId}`)}
+            className="mt-3 w-full rounded-xl border py-2.5 text-sm font-medium"
+            style={{ borderColor: "var(--color-bordure)", color: "var(--color-orange)" }}
+          >
+            Voir le recu
+          </button>
+        )}
+
         {detail.status === "cancelled" && (
           <p className="rounded-xl border border-bordure bg-carte py-3 text-center text-sm text-texte2">
             Demande refusee.

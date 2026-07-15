@@ -527,6 +527,18 @@ function Contenu() {
             </div>
           )}
 
+          {/* --- Voir le recu (acompte puis recu final) --- */}
+          {jobId && (paiement || enEspeces) && (paiement?.deposit_paid_at || demande.status === "validated") && (
+            <button
+              type="button"
+              onClick={() => router.push(`/recu?job=${jobId}`)}
+              className="mt-1 w-full rounded-xl border py-2 text-xs font-medium"
+              style={{ borderColor: "var(--color-bordure)", color: "var(--color-orange)" }}
+            >
+              Voir le recu
+            </button>
+          )}
+
           {/* --- Noter l'artisan (apres validation) --- */}
           {demande.status === "validated" && jobId && !dejaNote && (
             <div className="mt-1 border-t pt-3" style={{ borderColor: "var(--color-bordure)" }}>
