@@ -1,83 +1,127 @@
 // >>> EMPLACEMENT : src/app/admin/(protege)/artisans/page.tsx
 // =========================================================================
-// Liste de tous les artisans (admin), avec leur statut et leur note.
-// Composant serveur : lecture des donnees cote serveur.
+// ADMIN — Tous les artisans, avec les actions de RECOURS.
+//   - Compteurs par statut, cliquables pour filtrer (?statut=verified...).
+//   - Chaque carte permet de revenir sur une decision :
+//       . verifie a tort   -> annuler la verification / suspendre
+//       . refuse ou suspendu (il a fait appel) -> reexaminer le dossier
+//   - Toute action est tracee dans le journal d'administration.
+// Composant serveur : les donnees sont lues cote serveur.
 // =========================================================================
 
+import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { CarteArtisan, type ArtisanAdmin } from "./carte-artisan";
 
-// ===== Libelle lisible pour chaque statut =====
-const LIBELLE_STATUT: Record<string, string> = {
-  pending: "En attente",
-  verified: "Verifie",
-  rejected: "Refuse",
-  suspended: "Suspendu",
-};
+// ===== Filtres proposes en haut de page =====
+const FILTRES = [
+  { cle: "tous", libelle: "Tous" },
+  { cle: "verified", libelle: "Verifies" },
+  { cle: "pending", libelle: "En attente" },
+  { cle: "rejected", libelle: "Refuses" },
+  { cle: "suspended", libelle: "Suspendus" },
+];
 
-// ===== Couleur associee a chaque statut =====
-const COULEUR_STATUT: Record<string, string> = {
-  pending: "var(--color-orange)",
-  verified: "var(--color-vert)",
-  rejected: "#C0392B",
-  suspended: "#6B6860",
-};
-
-export default async function AdminArtisans() {
+export default async function AdminArtisans({
+  searchParams,
+}: {
+  searchParams: Promise<{ statut?: string }>;
+}) {
+  const params = await searchParams;
+  const filtre = params.statut ?? "tous";
   const supabase = await createClient();
 
-  // ===== Recuperer tous les artisans + nom/telephone du profil =====
-  const { data: artisans } = await supabase
+  // ===== Lire tous les artisans =====
+  const { data: lignes } = await supabase
     .from("artisans")
-    .select("id, status, average_rating, review_count, member_since, profiles ( name, phone )")
-    .order("member_since", { ascending: false });
+    .select("id, status, is_verified_badge, average_rating, review_count, job_count")
+    .order("status");
+
+  const artisansBruts = (lignes ?? []) as {
+    id: string;
+    status: string;
+    is_verified_badge: boolean;
+    average_rating: number | null;
+    review_count: number | null;
+    job_count: number | null;
+  }[];
+
+  // ===== Resoudre les noms et numeros =====
+  const ids = artisansBruts.map((a) => a.id);
+  const infos: Record<string, { name: string | null; phone: string | null }> = {};
+  if (ids.length) {
+    const { data: profs } = await supabase.from("profiles").select("id, name, phone").in("id", ids);
+    ((profs ?? []) as { id: string; name: string | null; phone: string | null }[]).forEach((p) => {
+      infos[p.id] = { name: p.name, phone: p.phone };
+    });
+  }
+
+  const artisans: ArtisanAdmin[] = artisansBruts.map((a) => ({
+    id: a.id,
+    nom: infos[a.id]?.name ?? "Artisan",
+    telephone: infos[a.id]?.phone ?? null,
+    statut: a.status,
+    badge: a.is_verified_badge,
+    note: a.average_rating ?? 0,
+    nbAvis: a.review_count ?? 0,
+    nbChantiers: a.job_count ?? 0,
+  }));
+
+  // ===== Compter par statut (pour les onglets) =====
+  const compte = (cle: string) =>
+    cle === "tous" ? artisans.length : artisans.filter((a) => a.statut === cle).length;
+
+  // ===== Appliquer le filtre =====
+  const liste = filtre === "tous" ? artisans : artisans.filter((a) => a.statut === filtre);
 
   return (
     <div>
       <h1 className="mb-1 text-2xl">Artisans</h1>
       <p className="mb-6 text-sm text-texte2">
-        Tous les artisans inscrits sur la plateforme.
+        Tous les profils, et la possibilite de revenir sur une decision.
       </p>
 
-      {(artisans ?? []).length === 0 ? (
-        <div className="rounded-2xl border border-bordure bg-carte p-10 text-center">
-          <p className="text-texte2">Aucun artisan inscrit pour le moment.</p>
-        </div>
+      {/* ===== Onglets de filtre (cliquables) ===== */}
+      <div className="mb-6 flex flex-wrap gap-2">
+        {FILTRES.map((f) => {
+          const actif = filtre === f.cle;
+          return (
+            <Link
+              key={f.cle}
+              href={f.cle === "tous" ? "/admin/artisans" : `/admin/artisans?statut=${f.cle}`}
+              className="rounded-xl border px-4 py-2 text-sm font-medium transition hover:brightness-95"
+              style={{
+                borderColor: actif ? "var(--color-orange)" : "var(--color-bordure)",
+                background: actif ? "var(--color-secondaire)" : "var(--color-carte)",
+                color: actif ? "var(--color-orange)" : "var(--color-texte2)",
+              }}
+            >
+              {f.libelle} ({compte(f.cle)})
+            </Link>
+          );
+        })}
+      </div>
+
+      {/* ===== Rappel du fonctionnement des recours ===== */}
+      <div className="mb-6 rounded-2xl border border-bordure bg-secondaire p-5">
+        <h2 className="text-base">Revenir sur une decision</h2>
+        <p className="mt-1 text-sm text-texte2">
+          Un artisan valide par erreur peut etre remis en file d&apos;attente ; un artisan refuse
+          qui a fait appel peut etre reexamine. Chaque action demande un motif et reste tracee dans
+          le journal d&apos;administration.
+        </p>
+      </div>
+
+      {/* ===== Liste ===== */}
+      {liste.length === 0 ? (
+        <p className="rounded-2xl border border-dashed border-bordure p-8 text-center text-sm text-texte2">
+          Aucun artisan dans cette categorie.
+        </p>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-bordure bg-carte">
-          {/* En-tete (visible sur grand ecran) */}
-          <div className="hidden grid-cols-4 gap-4 border-b border-bordure px-5 py-3 text-xs font-medium uppercase tracking-wide text-texte2 sm:grid">
-            <span>Nom</span>
-            <span>Telephone</span>
-            <span>Note</span>
-            <span>Statut</span>
-          </div>
-          {/* Lignes */}
-          {(artisans ?? []).map((a) => {
-            // profiles peut etre un objet ou un tableau selon la jointure.
-            const profil = Array.isArray(a.profiles) ? a.profiles[0] : a.profiles;
-            const nom = profil?.name ?? "Sans nom";
-            const tel = profil?.phone ?? "—";
-            return (
-              <div
-                key={a.id}
-                className="grid grid-cols-2 gap-2 border-b border-bordure px-5 py-4 text-sm last:border-0 sm:grid-cols-4 sm:gap-4"
-              >
-                <span className="font-medium">{nom}</span>
-                <span className="text-texte2">{tel}</span>
-                <span>
-                  {a.review_count > 0 ? `${Number(a.average_rating).toFixed(1)} ★` : "—"}
-                </span>
-                <span>
-                  <span
-                    className="inline-block rounded-full px-2.5 py-0.5 text-xs text-white"
-                    style={{ backgroundColor: COULEUR_STATUT[a.status] ?? "#6B6860" }}
-                  >
-                    {LIBELLE_STATUT[a.status] ?? a.status}
-                  </span>
-                </span>
-              </div>
-            );
-          })}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {liste.map((a) => (
+            <CarteArtisan key={a.id} artisan={a} />
+          ))}
         </div>
       )}
     </div>
