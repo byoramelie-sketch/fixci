@@ -20,6 +20,7 @@ export default async function TableauDeBordAdmin() {
   // ===== Bornes de dates utiles =====
   const debutJour = new Date(new Date().setHours(0, 0, 0, 0)).toISOString();
   const il7jours = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  const debutMois = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
 
   // ===== Compter les indicateurs cles (en parallele) =====
   const [
@@ -36,6 +37,37 @@ export default async function TableauDeBordAdmin() {
     supabase.from("disputes").select("*", { count: "exact", head: true }).eq("status", "open"),
   ]);
 
+  // ===== Revenus du mois + commissions a recevoir (en parallele) =====
+  // 3 sources : commissions prelevees dans l'app, versements des artisans
+  // (chantiers regles en especes), abonnements & mises en avant.
+  const [payMois, comTout, aboMois] = await Promise.all([
+    supabase
+      .from("payments")
+      .select("commission_fcfa")
+      .eq("status", "released")
+      .gte("payout_at", debutMois),
+    supabase.from("commissions").select("amount_fcfa, status, paid_at"),
+    supabase.from("artisan_subscriptions").select("amount_fcfa").gte("created_at", debutMois),
+  ]);
+
+  const somme = <T,>(l: T[] | null, cle: (x: T) => number) =>
+    (l ?? []).reduce((s, x) => s + cle(x), 0);
+
+  const commissionsApp = somme(payMois.data as { commission_fcfa: number }[] | null, (x) => x.commission_fcfa);
+  const commissionsEspeces = somme(
+    ((comTout.data ?? []) as { amount_fcfa: number; status: string; paid_at: string | null }[]).filter(
+      (c) => c.status === "paid" && c.paid_at != null && c.paid_at >= debutMois
+    ),
+    (x) => x.amount_fcfa
+  );
+  const abonnements = somme(aboMois.data as { amount_fcfa: number }[] | null, (x) => x.amount_fcfa);
+  const revenusMois = commissionsApp + commissionsEspeces + abonnements;
+
+  const aRecevoir = somme(
+    ((comTout.data ?? []) as { amount_fcfa: number; status: string }[]).filter((c) => c.status === "due"),
+    (x) => x.amount_fcfa
+  );
+
   // ===== Donnees pour le graphique "demandes par jour" =====
   // On recupere les demandes des 7 derniers jours, puis on compte par jour cote code.
   const { data: demandes7j } = await supabase
@@ -49,9 +81,21 @@ export default async function TableauDeBordAdmin() {
   // On compte les demandes par metier, puis on resout les noms des metiers.
   const repartition = await calculerRepartition(supabase, demandes7j ?? []);
 
+  // ===== Montant lisible (1695000 -> "1 695 000 FCFA") =====
+  const prixLisible = (n: number) => n.toLocaleString("fr-FR") + " FCFA";
+
   // ===== Liste des KPI a afficher =====
-  const kpis = [
-    { label: "Artisans en attente", valeur: enAttente.count ?? 0, accent: true, href: "/admin/verifications" },
+  // Les 2 premiers concernent l'argent et menent au suivi des revenus.
+  const kpis: {
+    label: string;
+    valeur: string | number;
+    accent?: "orange" | "vert";
+    href?: string;
+    argent?: boolean;
+  }[] = [
+    { label: "Revenus ce mois", valeur: prixLisible(revenusMois), accent: "vert", href: "/admin/revenus", argent: true },
+    { label: "A recevoir des artisans", valeur: prixLisible(aRecevoir), accent: "orange", href: "/admin/revenus", argent: true },
+    { label: "Artisans en attente", valeur: enAttente.count ?? 0, accent: "orange", href: "/admin/verifications" },
     { label: "Artisans actifs", valeur: actifs.count ?? 0 },
     { label: "Demandes aujourd'hui", valeur: demandesJour.count ?? 0 },
     { label: "Interventions terminees", valeur: interventionsTerminees.count ?? 0 },
@@ -64,23 +108,29 @@ export default async function TableauDeBordAdmin() {
       <p className="mb-6 text-sm text-texte2">Vue d&apos;ensemble de l&apos;activite FixCI.</p>
 
       {/* ===== Cartes KPI ===== */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {kpis.map((kpi) => {
+          const couleur =
+            kpi.accent === "vert"
+              ? "var(--color-vert)"
+              : kpi.accent === "orange"
+                ? "var(--color-orange)"
+                : "var(--color-texte)";
           const carte = (
             <div
               className="h-full rounded-2xl border bg-carte p-5"
-              style={{ borderColor: kpi.accent ? "var(--color-orange)" : "var(--color-bordure)" }}
+              style={{ borderColor: kpi.accent ? couleur : "var(--color-bordure)" }}
             >
               <p className="text-sm text-texte2">{kpi.label}</p>
               <p
-                className="mt-2 text-3xl font-bold"
-                style={{ color: kpi.accent ? "var(--color-orange)" : "var(--color-texte)" }}
+                className={`mt-2 font-bold ${kpi.argent ? "text-2xl" : "text-3xl"}`}
+                style={{ color: couleur }}
               >
                 {kpi.valeur}
               </p>
-              {kpi.accent && kpi.valeur > 0 && (
-                <p className="mt-1 text-xs font-medium" style={{ color: "var(--color-orange)" }}>
-                  A traiter →
+              {kpi.href && (
+                <p className="mt-1 text-xs font-medium" style={{ color: couleur }}>
+                  {kpi.argent ? "Voir le detail →" : "A traiter →"}
                 </p>
               )}
             </div>
