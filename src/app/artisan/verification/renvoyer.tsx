@@ -20,6 +20,7 @@ export function RenvoyerDossier({ artisanId }: { artisanId: string }) {
   const supabase = createClient();
 
   const [fichierCni, setFichierCni] = useState<File | null>(null);
+  const [fichierCniVerso, setFichierCniVerso] = useState<File | null>(null);
   const [fichierSelfie, setFichierSelfie] = useState<File | null>(null);
   const [envoi, setEnvoi] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -27,7 +28,11 @@ export function RenvoyerDossier({ artisanId }: { artisanId: string }) {
 
   async function renvoyer() {
     if (!fichierCni) {
-      setErreur("Prenez une photo de votre piece d'identite.");
+      setErreur("Prenez une photo du recto de votre piece d'identite.");
+      return;
+    }
+    if (!fichierCniVerso) {
+      setErreur("Prenez aussi une photo du verso de votre piece d'identite.");
       return;
     }
     if (!fichierSelfie) {
@@ -37,21 +42,24 @@ export function RenvoyerDossier({ artisanId }: { artisanId: string }) {
     setEnvoi(true);
     setErreur(null);
     try {
-      // 1. Remplacer les deux photos dans le coffre.
-      const extCni = fichierCni.name.split(".").pop() ?? "jpg";
-      const extSelfie = fichierSelfie.name.split(".").pop() ?? "jpg";
-      const cheminCni = `${artisanId}/cni.${extCni}`;
-      const cheminSelfie = `${artisanId}/visage.${extSelfie}`;
+      // 1. Remplacer les trois photos dans le coffre.
+      const cheminRecto = `${artisanId}/cni-recto.jpg`;
+      const cheminVerso = `${artisanId}/cni-verso.jpg`;
+      const cheminSelfie = `${artisanId}/visage.jpg`;
 
-      const [upCni, upSelfie] = await Promise.all([
+      const [upRecto, upVerso, upSelfie] = await Promise.all([
         supabase.storage
           .from("national-id-documents")
-          .upload(cheminCni, fichierCni, { upsert: true }),
+          .upload(cheminRecto, fichierCni, { upsert: true, contentType: "image/jpeg" }),
         supabase.storage
           .from("national-id-documents")
-          .upload(cheminSelfie, fichierSelfie, { upsert: true }),
+          .upload(cheminVerso, fichierCniVerso, { upsert: true, contentType: "image/jpeg" }),
+        supabase.storage
+          .from("national-id-documents")
+          .upload(cheminSelfie, fichierSelfie, { upsert: true, contentType: "image/jpeg" }),
       ]);
-      if (upCni.error) throw new Error(upCni.error.message);
+      if (upRecto.error) throw new Error(upRecto.error.message);
+      if (upVerso.error) throw new Error(upVerso.error.message);
       if (upSelfie.error) throw new Error(upSelfie.error.message);
 
       // 2. Remplacer les documents enregistres.
@@ -59,9 +67,10 @@ export function RenvoyerDossier({ artisanId }: { artisanId: string }) {
         .from("verification_documents")
         .delete()
         .eq("artisan_id", artisanId)
-        .in("type", ["national_id", "selfie"]);
+        .in("type", ["national_id", "national_id_back", "selfie"]);
       const { error: errDoc } = await supabase.from("verification_documents").insert([
-        { artisan_id: artisanId, type: "national_id", file_path: cheminCni, status: "pending" },
+        { artisan_id: artisanId, type: "national_id", file_path: cheminRecto, status: "pending" },
+        { artisan_id: artisanId, type: "national_id_back", file_path: cheminVerso, status: "pending" },
         { artisan_id: artisanId, type: "selfie", file_path: cheminSelfie, status: "pending" },
       ]);
       if (errDoc) throw new Error(errDoc.message);
@@ -93,8 +102,9 @@ export function RenvoyerDossier({ artisanId }: { artisanId: string }) {
   return (
     <div className="flex flex-col gap-4 text-left">
       <PrisePhoto
-        label="1. Votre piece d'identite"
-        aide="Posez-la a plat, bien eclairee, les 4 coins visibles et le texte lisible."
+        label="1. Piece d'identite — RECTO"
+        aide="Le cote avec votre photo et votre nom."
+        cadre="carte"
         camera="arriere"
         fichier={fichierCni}
         onChange={(f) => {
@@ -104,8 +114,21 @@ export function RenvoyerDossier({ artisanId }: { artisanId: string }) {
       />
 
       <PrisePhoto
-        label="2. Votre visage"
-        aide="Regardez l'objectif, sans lunettes de soleil ni casquette."
+        label="2. Piece d'identite — VERSO"
+        aide="L'autre cote : numero et date d'expiration."
+        cadre="carte"
+        camera="arriere"
+        fichier={fichierCniVerso}
+        onChange={(f) => {
+          setFichierCniVerso(f);
+          if (erreur) setErreur(null);
+        }}
+      />
+
+      <PrisePhoto
+        label="3. Votre visage"
+        aide="Nous le comparons a la photo de votre piece."
+        cadre="visage"
         camera="avant"
         fichier={fichierSelfie}
         onChange={(f) => {

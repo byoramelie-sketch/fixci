@@ -47,6 +47,8 @@ export default function InscriptionArtisan() {
 
   // Etape 3
   const [fichierCni, setFichierCni] = useState<File | null>(null);
+  // Le VERSO de la piece (numero, date d'expiration).
+  const [fichierCniVerso, setFichierCniVerso] = useState<File | null>(null);
   // Photo du visage, prise sur le champ : c'est elle qui permet de reperer
   // une usurpation (quelqu'un qui enverrait la piece d'identite d'un autre).
   const [fichierSelfie, setFichierSelfie] = useState<File | null>(null);
@@ -118,9 +120,13 @@ export default function InscriptionArtisan() {
 
   // ===== Soumission finale (etape 3) =====
   async function soumettre() {
-    // Les deux photos sont obligatoires.
+    // Les trois photos sont obligatoires.
     if (!fichierCni) {
-      setErreur("Prenez une photo de votre pièce d'identité.");
+      setErreur("Prenez une photo du recto de votre pièce d'identité.");
+      return;
+    }
+    if (!fichierCniVerso) {
+      setErreur("Prenez aussi une photo du verso de votre pièce d'identité.");
       return;
     }
     if (!fichierSelfie) {
@@ -207,31 +213,35 @@ export default function InscriptionArtisan() {
         communesChoisies.map((commune_id) => ({ artisan_id: userId, commune_id }))
       );
 
-      // ===== Televerser les 2 photos (bucket prive) =====
-      const extCni = fichierCni.name.split(".").pop() ?? "jpg";
-      const extSelfie = fichierSelfie.name.split(".").pop() ?? "jpg";
-      const cheminCni = `${userId}/cni.${extCni}`;
-      const cheminSelfie = `${userId}/visage.${extSelfie}`;
+      // ===== Televerser les 3 photos (bucket prive) =====
+      const cheminRecto = `${userId}/cni-recto.jpg`;
+      const cheminVerso = `${userId}/cni-verso.jpg`;
+      const cheminSelfie = `${userId}/visage.jpg`;
 
-      const [upCni, upSelfie] = await Promise.all([
+      const [upRecto, upVerso, upSelfie] = await Promise.all([
         supabase.storage
           .from("national-id-documents")
-          .upload(cheminCni, fichierCni, { upsert: true }),
+          .upload(cheminRecto, fichierCni, { upsert: true, contentType: "image/jpeg" }),
         supabase.storage
           .from("national-id-documents")
-          .upload(cheminSelfie, fichierSelfie, { upsert: true }),
+          .upload(cheminVerso, fichierCniVerso, { upsert: true, contentType: "image/jpeg" }),
+        supabase.storage
+          .from("national-id-documents")
+          .upload(cheminSelfie, fichierSelfie, { upsert: true, contentType: "image/jpeg" }),
       ]);
-      if (upCni.error) throw upCni.error;
+      if (upRecto.error) throw upRecto.error;
+      if (upVerso.error) throw upVerso.error;
       if (upSelfie.error) throw upSelfie.error;
 
-      // ===== Enregistrer les 2 documents de verification =====
+      // ===== Enregistrer les 3 documents de verification =====
       await supabase
         .from("verification_documents")
         .delete()
         .eq("artisan_id", userId)
-        .in("type", ["national_id", "selfie"]);
+        .in("type", ["national_id", "national_id_back", "selfie"]);
       const { error: errDoc } = await supabase.from("verification_documents").insert([
-        { artisan_id: userId, type: "national_id", file_path: cheminCni, status: "pending" },
+        { artisan_id: userId, type: "national_id", file_path: cheminRecto, status: "pending" },
+        { artisan_id: userId, type: "national_id_back", file_path: cheminVerso, status: "pending" },
         { artisan_id: userId, type: "selfie", file_path: cheminSelfie, status: "pending" },
       ]);
       if (errDoc) throw errDoc;
@@ -366,14 +376,15 @@ export default function InscriptionArtisan() {
         {etape === 3 && (
           <div className="space-y-4">
             <div className="rounded-xl border border-bordure bg-secondaire p-4 text-sm text-texte2">
-              Prenez les deux photos <strong>maintenant</strong>, avec votre telephone. Elles
+              Prenez les trois photos <strong>maintenant</strong>, avec votre telephone. Elles
               restent <strong>privees</strong> : seule l&apos;equipe FixCI les consulte, jamais les
               clients. C&apos;est ce controle qui protege votre nom des usurpations.
             </div>
 
             <PrisePhoto
-              label="1. Votre piece d'identite"
-              aide="Posez-la a plat, bien eclairee, les 4 coins visibles et le texte lisible."
+              label="1. Piece d'identite — RECTO"
+              aide="Le cote avec votre photo et votre nom."
+              cadre="carte"
               camera="arriere"
               fichier={fichierCni}
               onChange={(f) => {
@@ -383,8 +394,21 @@ export default function InscriptionArtisan() {
             />
 
             <PrisePhoto
-              label="2. Votre visage"
-              aide="Regardez l'objectif, sans lunettes de soleil ni casquette. Nous la comparons a votre piece d'identite."
+              label="2. Piece d'identite — VERSO"
+              aide="L'autre cote : numero et date d'expiration."
+              cadre="carte"
+              camera="arriere"
+              fichier={fichierCniVerso}
+              onChange={(f) => {
+                setFichierCniVerso(f);
+                if (erreur) setErreur(null);
+              }}
+            />
+
+            <PrisePhoto
+              label="3. Votre visage"
+              aide="Nous le comparons a la photo de votre piece."
+              cadre="visage"
               camera="avant"
               fichier={fichierSelfie}
               onChange={(f) => {

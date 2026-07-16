@@ -52,27 +52,35 @@ export function CarteVerification({
   // Elle n'existe que pour les dossiers deposes depuis la mise en place du
   // controle renforce. Les anciens dossiers n'en ont pas : c'est normal.
   const [urlSelfie, setUrlSelfie] = useState<string | null>(null);
+  const [urlVerso, setUrlVerso] = useState<string | null>(null);
+  const [versoPleinEcran, setVersoPleinEcran] = useState(false);
   const [selfieCherche, setSelfieCherche] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
         const supabase = createClient();
-        const { data: doc } = await supabase
+        const { data: docs } = await supabase
           .from("verification_documents")
-          .select("file_path")
+          .select("type, file_path")
           .eq("artisan_id", artisan.id)
-          .eq("type", "selfie")
-          .maybeSingle();
-        const chemin = (doc as { file_path: string } | null)?.file_path;
-        if (chemin) {
+          .in("type", ["selfie", "national_id_back"]);
+
+        const lignes = (docs ?? []) as { type: string; file_path: string }[];
+        const lien = async (type: string) => {
+          const chemin = lignes.find((l) => l.type === type)?.file_path;
+          if (!chemin) return null;
           const { data } = await supabase.storage
             .from("national-id-documents")
             .createSignedUrl(chemin, 3600);
-          setUrlSelfie(data?.signedUrl ?? null);
-        }
+          return data?.signedUrl ?? null;
+        };
+        const [selfie, verso] = await Promise.all([lien("selfie"), lien("national_id_back")]);
+        setUrlSelfie(selfie);
+        setUrlVerso(verso);
       } catch {
         setUrlSelfie(null);
+        setUrlVerso(null);
       } finally {
         setSelfieCherche(true);
       }
@@ -155,7 +163,7 @@ export function CarteVerification({
         <p className="mb-2 text-xs font-medium uppercase tracking-wide text-texte2">
           Le visage correspond-il a la piece ?
         </p>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           {/* --- Visage --- */}
           <div>
             {urlSelfie ? (
@@ -185,7 +193,7 @@ export function CarteVerification({
             )}
           </div>
 
-          {/* --- Piece d'identite (miniature de comparaison) --- */}
+          {/* --- Piece : RECTO --- */}
           <div>
             {urlCni && !cniEstPdf ? (
               <button
@@ -194,14 +202,42 @@ export function CarteVerification({
                 className="block w-full overflow-hidden rounded-xl border border-bordure"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={urlCni} alt="Piece d'identite" className="h-44 w-full object-cover" />
+                <img src={urlCni} alt="Piece d'identite recto" className="h-44 w-full object-cover" />
                 <span className="block bg-secondaire py-1.5 text-center text-xs text-texte2">
-                  Piece · agrandir
+                  Recto · agrandir
                 </span>
               </button>
             ) : (
               <div className="flex h-44 items-center justify-center rounded-xl border border-dashed border-bordure text-xs text-texte2">
                 {urlCni ? "Piece au format PDF" : "Aucune piece"}
+              </div>
+            )}
+          </div>
+
+          {/* --- Piece : VERSO --- */}
+          <div>
+            {urlVerso ? (
+              <button
+                type="button"
+                onClick={() => setVersoPleinEcran(true)}
+                className="block w-full overflow-hidden rounded-xl border border-bordure"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={urlVerso} alt="Piece d'identite verso" className="h-44 w-full object-cover" />
+                <span className="block bg-secondaire py-1.5 text-center text-xs text-texte2">
+                  Verso · agrandir
+                </span>
+              </button>
+            ) : (
+              <div className="flex h-44 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-bordure px-2 text-center text-xs text-texte2">
+                {selfieCherche ? (
+                  <>
+                    <span className="font-medium">Pas de verso</span>
+                    <span>Dossier depose avant le controle renforce.</span>
+                  </>
+                ) : (
+                  "Chargement..."
+                )}
               </div>
             )}
           </div>
@@ -281,9 +317,9 @@ export function CarteVerification({
               · Le visage correspond bien a la photo de la piece
             </strong>
           </li>
-          <li>· La photo de la CNI est nette et lisible</li>
+          <li>· Le recto et le verso sont nets et lisibles</li>
           <li>· Le nom sur la piece correspond au nom declare</li>
-          <li>· La piece n&apos;est pas expiree</li>
+          <li>· La piece n&apos;est pas expiree (voir le verso)</li>
           <li>· Les metiers et zones semblent coherents</li>
         </ul>
       </div>
@@ -361,6 +397,24 @@ export function CarteVerification({
           </button>
         </div>
       )}
+      {/* ===== Verso en plein ecran ===== */}
+      {versoPleinEcran && urlVerso && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setVersoPleinEcran(false)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={urlVerso} alt="Verso agrandi" className="max-h-full max-w-full rounded-lg" />
+          <button
+            type="button"
+            onClick={() => setVersoPleinEcran(false)}
+            className="absolute right-4 top-4 rounded-full bg-white/90 px-3 py-1.5 text-sm font-medium"
+          >
+            Fermer
+          </button>
+        </div>
+      )}
+
       {/* ===== Visage en plein ecran (quand on clique sur la photo) ===== */}
       {selfiePleinEcran && urlSelfie && (
         <div
