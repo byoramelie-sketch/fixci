@@ -16,6 +16,11 @@ import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
 import { BoutonRetour } from "@/components/icones";
 import { messageErreurAuth } from "@/lib/erreurs";
+import {
+  CaseAcceptation,
+  LienTexte,
+  enregistrerConsentements,
+} from "@/components/consentement";
 
 export default function InscriptionClient() {
   const router = useRouter();
@@ -31,6 +36,9 @@ export default function InscriptionClient() {
   const [errTel, setErrTel] = useState<string | null>(null);
   const [errMdp, setErrMdp] = useState<string | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
+  // Acceptation des conditions : rien n'est coche par defaut.
+  const [accepte, setAccepte] = useState(false);
+  const [errAccepte, setErrAccepte] = useState(false);
 
   // ===== Verifier les champs et afficher un message clair sous chacun =====
   function champsValides(): boolean {
@@ -52,6 +60,13 @@ export default function InscriptionClient() {
       setErrMdp("Le mot de passe doit contenir au moins 6 caractères.");
       ok = false;
     }
+    // Sans acceptation des conditions, pas de compte.
+    setErrAccepte(false);
+    if (!accepte) {
+      setErrAccepte(true);
+      setErreur("Vous devez accepter les conditions pour créer un compte.");
+      ok = false;
+    }
     return ok;
   }
 
@@ -64,42 +79,43 @@ export default function InscriptionClient() {
       // ===== Identifiant interne derive du numero =====
       const email = `${telephone.replace(/\D/g, "")}@example.com`;
 
-      // ===== Creer le compte, OU le recuperer s'il existe deja =====
-      let userId: string | undefined;
+      // ===== Creer le compte. Si le numero existe deja, on BLOQUE avec un
+      // message clair (aucune fusion de comptes). =====
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
         email,
         password: motDePasse,
         options: { data: { name: nom, phone: telephone, role: "client" } },
       });
 
-      if (errSignUp) {
-        const dejaInscrit =
-          errSignUp.message.toLowerCase().includes("already") ||
-          errSignUp.message.toLowerCase().includes("registered") ||
-          errSignUp.status === 422;
+      // Supabase signale un numero deja pris de 2 facons :
+      //  - une erreur "already registered" / statut 422,
+      //  - OU un utilisateur renvoye avec une liste "identities" vide.
+      const dejaUtilise =
+        (!!errSignUp &&
+          (errSignUp.message.toLowerCase().includes("already") ||
+            errSignUp.message.toLowerCase().includes("registered") ||
+            errSignUp.status === 422)) ||
+        (!!signUp?.user &&
+          Array.isArray(signUp.user.identities) &&
+          signUp.user.identities.length === 0);
 
-        if (dejaInscrit) {
-          // On tente de reconnecter (reprise). Si le mot de passe ne correspond
-          // pas, c'est que le numero est deja pris : message clair.
-          const { data: signIn, error: errSignIn } =
-            await supabase.auth.signInWithPassword({ email, password: motDePasse });
-          if (errSignIn) {
-            setErrTel("Ce numéro est déjà utilisé. Connectez-vous, ou utilisez un autre numéro.");
-            return;
-          }
-          userId = signIn.user?.id;
-        } else {
-          setErreur(messageErreurAuth(errSignUp.message));
-          return;
-        }
-      } else {
-        userId = signUp.user?.id;
+      if (dejaUtilise) {
+        setErrTel("Ce numéro est déjà utilisé. Connectez-vous, ou utilisez un autre numéro.");
+        return;
+      }
+      if (errSignUp) {
+        setErreur(messageErreurAuth(errSignUp.message));
+        return;
       }
 
+      const userId = signUp.user?.id;
       if (!userId) {
         setErreur("Compte introuvable. Veuillez réessayer.");
         return;
       }
+
+      // ===== Enregistrer la preuve du consentement (personne connectee) =====
+      await enregistrerConsentements(userId, ["cgu", "confidentialite"]);
 
       // ===== Creer / mettre a jour le profil (role client) =====
       const { error: errProfil } = await supabase
@@ -180,6 +196,24 @@ export default function InscriptionClient() {
               }}
             />
           </Champ>
+
+          {/* ===== Acceptation des conditions (obligatoire) ===== */}
+          <CaseAcceptation
+            coche={accepte}
+            erreur={errAccepte}
+            onChange={(v) => {
+              setAccepte(v);
+              if (v) {
+                setErrAccepte(false);
+                setErreur(null);
+              }
+            }}
+          >
+            J&apos;accepte les <LienTexte href="/cgu">conditions d&apos;utilisation</LienTexte> et la{" "}
+            <LienTexte href="/confidentialite">politique de confidentialite</LienTexte> de FixCI.
+            Mes donnees servent a mettre en relation avec des artisans et a assurer le suivi des
+            interventions.
+          </CaseAcceptation>
 
           <Bouton onClick={soumettre} disabled={chargement}>
             {chargement ? "Creation..." : "Creer mon compte"}

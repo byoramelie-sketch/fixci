@@ -6,6 +6,11 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
 import { messageErreurAuth } from "@/lib/erreurs";
+import {
+  CaseAcceptation,
+  LienTexte,
+  enregistrerConsentements,
+} from "@/components/consentement";
 import type { Trade, Commune } from "@/lib/types";
 
 // =========================================================================
@@ -41,6 +46,11 @@ export default function InscriptionArtisan() {
 
   // Etape 3
   const [fichierCni, setFichierCni] = useState<File | null>(null);
+  // Consentements : rien n'est coche par defaut.
+  const [accepteCgu, setAccepteCgu] = useState(false);
+  const [accepteIdentite, setAccepteIdentite] = useState(false);
+  const [errCgu, setErrCgu] = useState(false);
+  const [errIdentite, setErrIdentite] = useState(false);
 
   // Erreurs par champ + generales
   const [errNom, setErrNom] = useState<string | null>(null);
@@ -109,49 +119,63 @@ export default function InscriptionArtisan() {
       setErreur("Ajoutez une photo de votre pièce d'identité.");
       return;
     }
+    // Les deux consentements sont obligatoires : les conditions generales,
+    // et l'accord explicite pour l'usage de la piece d'identite.
+    setErrCgu(false);
+    setErrIdentite(false);
+    if (!accepteCgu || !accepteIdentite) {
+      setErrCgu(!accepteCgu);
+      setErrIdentite(!accepteIdentite);
+      setErreur("Vous devez accepter les conditions pour envoyer votre dossier.");
+      return;
+    }
     setChargement(true);
     setErreur(null);
 
     try {
       const email = `${telephone.replace(/\D/g, "")}@example.com`;
 
-      // ===== Creer le compte, OU le recuperer s'il existe deja =====
-      let userId: string | undefined;
+      // ===== Creer le compte. Si le numero existe deja, on BLOQUE (aucune
+      // fusion) et on renvoie a l'etape 1 avec le message. =====
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
         email,
         password: motDePasse,
         options: { data: { name: nom, phone: telephone, role: "artisan" } },
       });
 
-      if (errSignUp) {
-        const dejaInscrit =
-          errSignUp.message.toLowerCase().includes("already") ||
-          errSignUp.message.toLowerCase().includes("registered") ||
-          errSignUp.status === 422;
+      const dejaUtilise =
+        (!!errSignUp &&
+          (errSignUp.message.toLowerCase().includes("already") ||
+            errSignUp.message.toLowerCase().includes("registered") ||
+            errSignUp.status === 422)) ||
+        (!!signUp?.user &&
+          Array.isArray(signUp.user.identities) &&
+          signUp.user.identities.length === 0);
 
-        if (dejaInscrit) {
-          // On tente de reconnecter. Si le mot de passe ne correspond pas,
-          // le numero est deja pris : on renvoie a l'etape 1 avec le message.
-          const { data: signIn, error: errSignIn } =
-            await supabase.auth.signInWithPassword({ email, password: motDePasse });
-          if (errSignIn) {
-            setErrTel("Ce numéro est déjà utilisé. Connectez-vous, ou utilisez un autre numéro.");
-            setEtape(1);
-            return;
-          }
-          userId = signIn.user?.id;
-        } else {
-          setErreur(messageErreurAuth(errSignUp.message));
-          return;
-        }
-      } else {
-        userId = signUp.user?.id;
+      if (dejaUtilise) {
+        setErrTel("Ce numéro est déjà utilisé. Connectez-vous, ou utilisez un autre numéro.");
+        setEtape(1);
+        return;
+      }
+      if (errSignUp) {
+        setErreur(messageErreurAuth(errSignUp.message));
+        return;
       }
 
+      const userId = signUp.user?.id;
       if (!userId) {
         setErreur("Compte introuvable. Veuillez réessayer.");
         return;
       }
+
+      // ===== Enregistrer la preuve des consentements =====
+      // On le fait AVANT de televerser la piece d'identite : on ne collecte
+      // pas de document sans avoir trace l'accord de la personne.
+      await enregistrerConsentements(userId, [
+        "cgu",
+        "confidentialite",
+        "verification_identite",
+      ]);
 
       // ===== Profil (upsert) =====
       const { error: errProfil } = await supabase
@@ -338,6 +362,42 @@ export default function InscriptionArtisan() {
                 }}
               />
             </Champ>
+            {/* ===== Consentements (obligatoires) ===== */}
+            <div className="flex flex-col gap-2">
+              <CaseAcceptation
+                coche={accepteCgu}
+                erreur={errCgu}
+                onChange={(v) => {
+                  setAccepteCgu(v);
+                  if (v) {
+                    setErrCgu(false);
+                    setErreur(null);
+                  }
+                }}
+              >
+                J&apos;accepte les <LienTexte href="/cgu">conditions d&apos;utilisation</LienTexte>{" "}
+                et la <LienTexte href="/confidentialite">politique de confidentialite</LienTexte> de
+                FixCI.
+              </CaseAcceptation>
+
+              <CaseAcceptation
+                coche={accepteIdentite}
+                erreur={errIdentite}
+                onChange={(v) => {
+                  setAccepteIdentite(v);
+                  if (v) {
+                    setErrIdentite(false);
+                    setErreur(null);
+                  }
+                }}
+              >
+                <strong>J&apos;autorise FixCI a utiliser ma piece d&apos;identite</strong> dans le
+                seul but de verifier qui je suis. Elle reste privee (jamais montree aux clients),
+                elle n&apos;est consultee que par l&apos;equipe de verification, et je peux demander
+                sa suppression a tout moment.
+              </CaseAcceptation>
+            </div>
+
             {erreur && (
               <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{erreur}</p>
             )}
