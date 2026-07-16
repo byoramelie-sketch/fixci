@@ -9,8 +9,9 @@
 //   - Approuver / Rejeter (avec motif obligatoire)
 // =========================================================================
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { approuverArtisan, rejeterArtisan } from "./actions";
+import { createClient } from "@/lib/supabase/client";
 
 // ===== Type des donnees d'un artisan en attente =====
 // Supabase renvoie les relations sous forme de tableaux (meme pour un
@@ -43,8 +44,40 @@ export function CarteVerification({
   const [motif, setMotif] = useState("");
   const [erreur, setErreur] = useState<string | null>(null);
   const [traite, setTraite] = useState<null | "approuve" | "rejete">(null);
-  // Affichage de la CNI en plein ecran.
+  // Affichage d'une photo en plein ecran ("cni" ou "selfie").
   const [cniPleinEcran, setCniPleinEcran] = useState(false);
+  const [selfiePleinEcran, setSelfiePleinEcran] = useState(false);
+
+  // ===== Photo du visage (verification renforcee) =====
+  // Elle n'existe que pour les dossiers deposes depuis la mise en place du
+  // controle renforce. Les anciens dossiers n'en ont pas : c'est normal.
+  const [urlSelfie, setUrlSelfie] = useState<string | null>(null);
+  const [selfieCherche, setSelfieCherche] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data: doc } = await supabase
+          .from("verification_documents")
+          .select("file_path")
+          .eq("artisan_id", artisan.id)
+          .eq("type", "selfie")
+          .maybeSingle();
+        const chemin = (doc as { file_path: string } | null)?.file_path;
+        if (chemin) {
+          const { data } = await supabase.storage
+            .from("national-id-documents")
+            .createSignedUrl(chemin, 3600);
+          setUrlSelfie(data?.signedUrl ?? null);
+        }
+      } catch {
+        setUrlSelfie(null);
+      } finally {
+        setSelfieCherche(true);
+      }
+    })();
+  }, [artisan.id]);
 
   const profil = premier(artisan.profiles);
   const nom = profil?.name ?? "Artisan";
@@ -115,6 +148,66 @@ export function CarteVerification({
         </span>
       </div>
 
+      {/* ===== Comparaison VISAGE / PIECE D IDENTITE ===== */}
+      {/* C'est le controle qui bloque les usurpations : la personne sur la
+          photo est-elle bien celle de la piece ? */}
+      <div className="mt-4">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-texte2">
+          Le visage correspond-il a la piece ?
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          {/* --- Visage --- */}
+          <div>
+            {urlSelfie ? (
+              <button
+                type="button"
+                onClick={() => setSelfiePleinEcran(true)}
+                className="block w-full overflow-hidden rounded-xl border"
+                style={{ borderColor: "var(--color-vert)" }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={urlSelfie} alt="Visage de l'artisan" className="h-44 w-full object-cover" />
+                <span className="block bg-secondaire py-1.5 text-center text-xs text-texte2">
+                  Visage · agrandir
+                </span>
+              </button>
+            ) : (
+              <div className="flex h-44 flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-bordure px-3 text-center text-xs text-texte2">
+                {selfieCherche ? (
+                  <>
+                    <span className="font-medium">Pas de photo du visage</span>
+                    <span>Dossier depose avant le controle renforce.</span>
+                  </>
+                ) : (
+                  "Chargement..."
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* --- Piece d'identite (miniature de comparaison) --- */}
+          <div>
+            {urlCni && !cniEstPdf ? (
+              <button
+                type="button"
+                onClick={() => setCniPleinEcran(true)}
+                className="block w-full overflow-hidden rounded-xl border border-bordure"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={urlCni} alt="Piece d'identite" className="h-44 w-full object-cover" />
+                <span className="block bg-secondaire py-1.5 text-center text-xs text-texte2">
+                  Piece · agrandir
+                </span>
+              </button>
+            ) : (
+              <div className="flex h-44 items-center justify-center rounded-xl border border-dashed border-bordure text-xs text-texte2">
+                {urlCni ? "Piece au format PDF" : "Aucune piece"}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* ===== Zone de controle : CNI a gauche, infos a droite ===== */}
       <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
         {/* --- CNI --- */}
@@ -183,6 +276,11 @@ export function CarteVerification({
           A verifier avant d&apos;approuver
         </p>
         <ul className="space-y-1.5 text-sm text-texte2">
+          <li>
+            <strong style={{ color: "var(--color-texte)" }}>
+              · Le visage correspond bien a la photo de la piece
+            </strong>
+          </li>
           <li>· La photo de la CNI est nette et lisible</li>
           <li>· Le nom sur la piece correspond au nom declare</li>
           <li>· La piece n&apos;est pas expiree</li>
@@ -257,6 +355,23 @@ export function CarteVerification({
           <button
             type="button"
             onClick={() => setCniPleinEcran(false)}
+            className="absolute right-4 top-4 rounded-full bg-white/90 px-3 py-1.5 text-sm font-medium"
+          >
+            Fermer
+          </button>
+        </div>
+      )}
+      {/* ===== Visage en plein ecran (quand on clique sur la photo) ===== */}
+      {selfiePleinEcran && urlSelfie && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setSelfiePleinEcran(false)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={urlSelfie} alt="Visage agrandi" className="max-h-full max-w-full rounded-lg" />
+          <button
+            type="button"
+            onClick={() => setSelfiePleinEcran(false)}
             className="absolute right-4 top-4 rounded-full bg-white/90 px-3 py-1.5 text-sm font-medium"
           >
             Fermer

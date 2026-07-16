@@ -11,6 +11,7 @@ import {
   LienTexte,
   enregistrerConsentements,
 } from "@/components/consentement";
+import { PrisePhoto } from "@/components/prise-photo";
 import type { Trade, Commune } from "@/lib/types";
 
 // =========================================================================
@@ -46,6 +47,9 @@ export default function InscriptionArtisan() {
 
   // Etape 3
   const [fichierCni, setFichierCni] = useState<File | null>(null);
+  // Photo du visage, prise sur le champ : c'est elle qui permet de reperer
+  // une usurpation (quelqu'un qui enverrait la piece d'identite d'un autre).
+  const [fichierSelfie, setFichierSelfie] = useState<File | null>(null);
   // Consentements : rien n'est coche par defaut.
   const [accepteCgu, setAccepteCgu] = useState(false);
   const [accepteIdentite, setAccepteIdentite] = useState(false);
@@ -114,9 +118,13 @@ export default function InscriptionArtisan() {
 
   // ===== Soumission finale (etape 3) =====
   async function soumettre() {
-    // La CNI est obligatoire.
+    // Les deux photos sont obligatoires.
     if (!fichierCni) {
-      setErreur("Ajoutez une photo de votre pièce d'identité.");
+      setErreur("Prenez une photo de votre pièce d'identité.");
+      return;
+    }
+    if (!fichierSelfie) {
+      setErreur("Prenez une photo de votre visage : elle sera comparée à votre pièce d'identité.");
       return;
     }
     // Les deux consentements sont obligatoires : les conditions generales,
@@ -199,23 +207,33 @@ export default function InscriptionArtisan() {
         communesChoisies.map((commune_id) => ({ artisan_id: userId, commune_id }))
       );
 
-      // ===== Televerser la CNI (bucket prive) =====
-      const ext = fichierCni.name.split(".").pop() ?? "jpg";
-      const chemin = `${userId}/cni.${ext}`;
-      const { error: errUpload } = await supabase.storage
-        .from("national-id-documents")
-        .upload(chemin, fichierCni, { upsert: true });
-      if (errUpload) throw errUpload;
+      // ===== Televerser les 2 photos (bucket prive) =====
+      const extCni = fichierCni.name.split(".").pop() ?? "jpg";
+      const extSelfie = fichierSelfie.name.split(".").pop() ?? "jpg";
+      const cheminCni = `${userId}/cni.${extCni}`;
+      const cheminSelfie = `${userId}/visage.${extSelfie}`;
 
-      // ===== Enregistrer le document de verification =====
+      const [upCni, upSelfie] = await Promise.all([
+        supabase.storage
+          .from("national-id-documents")
+          .upload(cheminCni, fichierCni, { upsert: true }),
+        supabase.storage
+          .from("national-id-documents")
+          .upload(cheminSelfie, fichierSelfie, { upsert: true }),
+      ]);
+      if (upCni.error) throw upCni.error;
+      if (upSelfie.error) throw upSelfie.error;
+
+      // ===== Enregistrer les 2 documents de verification =====
       await supabase
         .from("verification_documents")
         .delete()
         .eq("artisan_id", userId)
-        .eq("type", "national_id");
-      const { error: errDoc } = await supabase
-        .from("verification_documents")
-        .insert({ artisan_id: userId, type: "national_id", file_path: chemin, status: "pending" });
+        .in("type", ["national_id", "selfie"]);
+      const { error: errDoc } = await supabase.from("verification_documents").insert([
+        { artisan_id: userId, type: "national_id", file_path: cheminCni, status: "pending" },
+        { artisan_id: userId, type: "selfie", file_path: cheminSelfie, status: "pending" },
+      ]);
       if (errDoc) throw errDoc;
 
       router.push("/artisan/verification");
@@ -348,20 +366,32 @@ export default function InscriptionArtisan() {
         {etape === 3 && (
           <div className="space-y-4">
             <div className="rounded-xl border border-bordure bg-secondaire p-4 text-sm text-texte2">
-              Votre piece d&apos;identite reste <strong>privee</strong> : seule
-              l&apos;equipe FixCI peut la consulter, jamais les clients.
+              Prenez les deux photos <strong>maintenant</strong>, avec votre telephone. Elles
+              restent <strong>privees</strong> : seule l&apos;equipe FixCI les consulte, jamais les
+              clients. C&apos;est ce controle qui protege votre nom des usurpations.
             </div>
-            <Champ label="Photo de la piece d'identite (CNI)">
-              <input
-                className="champ"
-                type="file"
-                accept="image/*,.pdf"
-                onChange={(e) => {
-                  setFichierCni(e.target.files?.[0] ?? null);
-                  if (erreur) setErreur(null);
-                }}
-              />
-            </Champ>
+
+            <PrisePhoto
+              label="1. Votre piece d'identite"
+              aide="Posez-la a plat, bien eclairee, les 4 coins visibles et le texte lisible."
+              camera="arriere"
+              fichier={fichierCni}
+              onChange={(f) => {
+                setFichierCni(f);
+                if (erreur) setErreur(null);
+              }}
+            />
+
+            <PrisePhoto
+              label="2. Votre visage"
+              aide="Regardez l'objectif, sans lunettes de soleil ni casquette. Nous la comparons a votre piece d'identite."
+              camera="avant"
+              fichier={fichierSelfie}
+              onChange={(f) => {
+                setFichierSelfie(f);
+                if (erreur) setErreur(null);
+              }}
+            />
             {/* ===== Consentements (obligatoires) ===== */}
             <div className="flex flex-col gap-2">
               <CaseAcceptation
