@@ -19,7 +19,11 @@ import { createClient } from "@/lib/supabase/client";
 
 type Message = {
   id: string;
-  sender_id: string;
+  // Un message de FixCI n'a pas d'expediteur humain : sender_id est vide et
+  // is_system vaut true. On ne met jamais un message automatique dans la
+  // bouche du client ou de l'artisan.
+  sender_id: string | null;
+  is_system: boolean;
   content: string;
   created_at: string;
   offer_amount_fcfa: number | null;
@@ -66,12 +70,17 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
   const [chargement, setChargement] = useState(true);
   const [envoi, setEnvoi] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
+  // Ou envoyer la personne pour noter, et a-t-elle deja note ?
+  // Le bouton "Laisser un avis" disparait une fois l'avis donne : on ne
+  // harcele personne.
+  const [lienAvis, setLienAvis] = useState<string | null>(null);
+  const [dejaNote, setDejaNote] = useState(false);
   const finRef = useRef<HTMLDivElement>(null);
 
   async function charger() {
     const { data } = await supabase
       .from("messages")
-      .select("id, sender_id, content, created_at, offer_amount_fcfa, offer_status, quote_id")
+      .select("id, sender_id, is_system, content, created_at, offer_amount_fcfa, offer_status, quote_id")
       .eq("conversation_id", conversationId)
       .order("created_at", { ascending: true });
     const liste = (data ?? []) as Message[];
@@ -90,6 +99,46 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
       });
       setDevis(parId);
     }
+
+    // ===== Ou mene le bouton "Laisser un avis" ? =====
+    // On ne le calcule que si FixCI a envoye son invitation, pour ne pas
+    // charger inutilement a chaque rafraichissement.
+    if (liste.some((m) => m.is_system)) {
+      const { data: conv } = await supabase
+        .from("conversations")
+        .select("request_id, client_id, artisan_id")
+        .eq("id", conversationId)
+        .maybeSingle();
+      const c = conv as { request_id: string; client_id: string; artisan_id: string } | null;
+
+      if (c) {
+        // Je suis le client, ou l'artisan ? Chacun note depuis son espace.
+        const suisClient = c.client_id === monId;
+        setLienAvis(
+          suisClient
+            ? `/client/mes-demandes/detail?id=${c.request_id}`
+            : `/artisan/demandes/${c.request_id}`
+        );
+
+        // Ai-je deja note ce chantier ?
+        const { data: job } = await supabase
+          .from("jobs")
+          .select("id")
+          .eq("request_id", c.request_id)
+          .maybeSingle();
+        const idJob = (job as { id: string } | null)?.id;
+        if (idJob) {
+          const { data: avis } = await supabase
+            .from("reviews")
+            .select("id")
+            .eq("job_id", idJob)
+            .eq("author_id", monId)
+            .maybeSingle();
+          setDejaNote(!!avis);
+        }
+      }
+    }
+
     setChargement(false);
   }
 
@@ -207,6 +256,50 @@ export function Chat({ conversationId, monId }: { conversationId: string; monId:
           <div className="flex flex-col gap-2">
             {messages.map((m) => {
               const aMoi = m.sender_id === monId;
+
+              // ----- MESSAGE DE FIXCI (invitation a noter) -----
+              // Centre, sans bulle, visuellement different d'un message humain :
+              // on doit voir d'un coup d'oeil que ca ne vient pas de l'autre
+              // personne. Le bouton disparait une fois l'avis laisse.
+              if (m.is_system) {
+                return (
+                  <div
+                    key={m.id}
+                    className="mx-auto my-1 w-full max-w-[92%] rounded-2xl border border-dashed p-3 text-center"
+                    style={{ borderColor: "var(--color-or)", background: "var(--color-secondaire)" }}
+                  >
+                    <span
+                      className="block text-[11px] font-semibold uppercase tracking-wide"
+                      style={{ color: "var(--color-or)" }}
+                    >
+                      FixCI
+                    </span>
+                    <span
+                      className="mt-1 block text-sm"
+                      style={{ color: "var(--color-texte)" }}
+                    >
+                      {m.content}
+                    </span>
+                    {lienAvis && !dejaNote && (
+                      <a
+                        href={lienAvis}
+                        className="mt-2 inline-block rounded-xl px-4 py-2 text-xs font-semibold text-white"
+                        style={{ background: "var(--color-or)" }}
+                      >
+                        Laisser un avis
+                      </a>
+                    )}
+                    {dejaNote && (
+                      <span
+                        className="mt-2 block text-xs font-medium"
+                        style={{ color: "var(--color-vert)" }}
+                      >
+                        Merci, votre avis est enregistre.
+                      </span>
+                    )}
+                  </div>
+                );
+              }
 
               // ----- DEVIS DETAILLE -----
               if (m.quote_id && devis[m.quote_id]) {
