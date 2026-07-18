@@ -12,6 +12,8 @@ import {
   enregistrerConsentements,
 } from "@/components/consentement";
 import { PrisePhoto } from "@/components/prise-photo";
+import { ChampTelephone } from "@/components/champ-telephone";
+import { PAYS_DEFAUT, normaliserTelephone, telephoneVersEmail } from "@/lib/telephone";
 import type { Trade, Commune } from "@/lib/types";
 
 // =========================================================================
@@ -38,6 +40,8 @@ export default function InscriptionArtisan() {
 
   // Etape 1
   const [nom, setNom] = useState("");
+  // Le pays choisi + le numero tel que la personne le tape.
+  const [codePays, setCodePays] = useState(PAYS_DEFAUT.code);
   const [telephone, setTelephone] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
 
@@ -97,8 +101,9 @@ export default function InscriptionArtisan() {
       setErrNom("Veuillez entrer votre nom complet.");
       ok = false;
     }
-    if (telephone.replace(/\D/g, "").length < 8) {
-      setErrTel("Numéro de téléphone invalide.");
+    // Le numero doit etre valide pour le pays choisi.
+    if (!normaliserTelephone(codePays, telephone)) {
+      setErrTel("Numéro invalide pour le pays choisi.");
       ok = false;
     }
     if (motDePasse.length < 6) {
@@ -147,14 +152,21 @@ export default function InscriptionArtisan() {
     setErreur(null);
 
     try {
-      const email = `${telephone.replace(/\D/g, "")}@example.com`;
+      // ===== Numero au format international : "un numero = un compte" =====
+      const numero = normaliserTelephone(codePays, telephone);
+      if (!numero) {
+        setErrTel("Numéro invalide pour le pays choisi.");
+        setChargement(false);
+        return;
+      }
+      const email = telephoneVersEmail(numero);
 
       // ===== Creer le compte. Si le numero existe deja, on BLOQUE (aucune
       // fusion) et on renvoie a l'etape 1 avec le message. =====
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
         email,
         password: motDePasse,
-        options: { data: { name: nom, phone: telephone, role: "artisan" } },
+        options: { data: { name: nom, phone: numero, role: "artisan" } },
       });
 
       const dejaUtilise =
@@ -194,7 +206,7 @@ export default function InscriptionArtisan() {
       // ===== Profil (upsert) =====
       const { error: errProfil } = await supabase
         .from("profiles")
-        .upsert({ id: userId, name: nom, phone: telephone, role: "artisan" }, { onConflict: "id" });
+        .upsert({ id: userId, name: nom, phone: numero, role: "artisan" }, { onConflict: "id" });
       if (errProfil) throw errProfil;
 
       // ===== Fiche artisan (upsert) =====
@@ -294,19 +306,17 @@ export default function InscriptionArtisan() {
                 placeholder="Konan Kouassi"
               />
             </Champ>
-            <Champ label="Numero de telephone / WhatsApp" erreur={errTel}>
-              <input
-                className="champ"
-                style={errTel ? { borderColor: "#dc2626" } : undefined}
-                value={telephone}
-                onChange={(e) => {
-                  setTelephone(e.target.value);
-                  if (errTel) setErrTel(null);
-                }}
-                placeholder="07 07 12 34 56"
-                inputMode="tel"
-              />
-            </Champ>
+            <ChampTelephone
+              codePays={codePays}
+              onCodePays={setCodePays}
+              saisie={telephone}
+              onSaisie={(v) => {
+                setTelephone(v);
+                if (errTel) setErrTel(null);
+              }}
+              erreur={errTel}
+              aide="Ce numero sera votre identifiant, et celui que verront vos clients."
+            />
             <Champ label="Mot de passe (6 caracteres minimum)" erreur={errMdp}>
               <input
                 className="champ"

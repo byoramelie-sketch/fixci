@@ -16,6 +16,8 @@ import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
 import { BoutonRetour } from "@/components/icones";
 import { messageErreurAuth } from "@/lib/erreurs";
+import { ChampTelephone } from "@/components/champ-telephone";
+import { PAYS_DEFAUT, normaliserTelephone, telephoneVersEmail } from "@/lib/telephone";
 import {
   CaseAcceptation,
   LienTexte,
@@ -27,6 +29,8 @@ export default function InscriptionClient() {
   const supabase = createClient();
 
   const [nom, setNom] = useState("");
+  // Le pays choisi + le numero tel que la personne le tape.
+  const [codePays, setCodePays] = useState(PAYS_DEFAUT.code);
   const [telephone, setTelephone] = useState("");
   const [motDePasse, setMotDePasse] = useState("");
   const [chargement, setChargement] = useState(false);
@@ -52,8 +56,9 @@ export default function InscriptionClient() {
       setErrNom("Veuillez entrer votre nom complet.");
       ok = false;
     }
-    if (telephone.replace(/\D/g, "").length < 8) {
-      setErrTel("Numéro de téléphone invalide.");
+    // Le numero doit etre valide pour le pays choisi.
+    if (!normaliserTelephone(codePays, telephone)) {
+      setErrTel("Numéro invalide pour le pays choisi.");
       ok = false;
     }
     if (motDePasse.length < 6) {
@@ -76,15 +81,23 @@ export default function InscriptionClient() {
 
     setChargement(true);
     try {
-      // ===== Identifiant interne derive du numero =====
-      const email = `${telephone.replace(/\D/g, "")}@example.com`;
+      // ===== Numero au format international : "un numero = un compte" =====
+      // Peu importe comment la personne l'a tape (0707..., +225 07 07...),
+      // on retombe toujours sur la meme ecriture, donc le meme compte.
+      const numero = normaliserTelephone(codePays, telephone);
+      if (!numero) {
+        setErrTel("Numéro invalide pour le pays choisi.");
+        setChargement(false);
+        return;
+      }
+      const email = telephoneVersEmail(numero);
 
       // ===== Creer le compte. Si le numero existe deja, on BLOQUE avec un
       // message clair (aucune fusion de comptes). =====
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
         email,
         password: motDePasse,
-        options: { data: { name: nom, phone: telephone, role: "client" } },
+        options: { data: { name: nom, phone: numero, role: "client" } },
       });
 
       // Supabase signale un numero deja pris de 2 facons :
@@ -120,7 +133,7 @@ export default function InscriptionClient() {
       // ===== Creer / mettre a jour le profil (role client) =====
       const { error: errProfil } = await supabase
         .from("profiles")
-        .upsert({ id: userId, name: nom, phone: telephone, role: "client" }, { onConflict: "id" });
+        .upsert({ id: userId, name: nom, phone: numero, role: "client" }, { onConflict: "id" });
       if (errProfil) throw errProfil;
 
       // ===== Creer la ligne "clients" (les autres colonnes ont un defaut) =====
@@ -171,19 +184,17 @@ export default function InscriptionClient() {
               placeholder="Awa Diallo"
             />
           </Champ>
-          <Champ label="Numero de telephone / WhatsApp" erreur={errTel}>
-            <input
-              className="champ"
-              style={errTel ? { borderColor: "#dc2626" } : undefined}
-              value={telephone}
-              onChange={(e) => {
-                setTelephone(e.target.value);
-                if (errTel) setErrTel(null);
-              }}
-              placeholder="07 07 12 34 56"
-              inputMode="tel"
-            />
-          </Champ>
+          <ChampTelephone
+            codePays={codePays}
+            onCodePays={setCodePays}
+            saisie={telephone}
+            onSaisie={(v) => {
+              setTelephone(v);
+              if (errTel) setErrTel(null);
+            }}
+            erreur={errTel}
+            aide="Ce numero sera votre identifiant de connexion."
+          />
           <Champ label="Mot de passe (6 caracteres minimum)" erreur={errMdp}>
             <input
               className="champ"

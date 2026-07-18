@@ -13,12 +13,18 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { FiletTricolore, Logo, Bouton } from "@/components/ui";
 import { messageErreurAuth } from "@/lib/erreurs";
+import { ancienEmail, normaliserTelephone, telephoneVersEmail } from "@/lib/telephone";
+import { PAYS, PAYS_DEFAUT } from "@/lib/telephone";
 
 export default function Connexion() {
   const router = useRouter();
   const supabase = createClient();
 
   const [identifiant, setIdentifiant] = useState(""); // numero OU e-mail
+  const [codePays, setCodePays] = useState(PAYS_DEFAUT.code);
+
+  // Si la personne tape une adresse, l'indicatif ne sert a rien.
+  const estEmail = identifiant.includes("@");
   const [motDePasse, setMotDePasse] = useState("");
   const [chargement, setChargement] = useState(false);
 
@@ -27,11 +33,24 @@ export default function Connexion() {
   const [errMotDePasse, setErrMotDePasse] = useState<string | null>(null);
   const [errGenerale, setErrGenerale] = useState<string | null>(null);
 
-  // ===== Transformer l'identifiant saisi en e-mail de connexion =====
-  function versEmail(saisie: string): string {
+  // ===== Les identifiants a essayer, dans l'ordre =====
+  // Un e-mail : on le prend tel quel.
+  // Un numero : on essaie d'abord le format international (les comptes creés
+  // depuis la normalisation), puis l'ANCIEN format (les comptes d'avant).
+  // Ce second essai est une passerelle : a retirer quand plus personne ne
+  // se connectera avec un compte cree avant la normalisation.
+  function identifiantsPossibles(saisie: string): string[] {
     const valeur = saisie.trim();
-    if (valeur.includes("@")) return valeur;
-    return `${valeur.replace(/\D/g, "")}@example.com`;
+    if (valeur.includes("@")) return [valeur];
+
+    const essais: string[] = [];
+    const numero = normaliserTelephone(codePays, valeur);
+    if (numero) essais.push(telephoneVersEmail(numero));
+
+    const ancien = ancienEmail(valeur);
+    if (!essais.includes(ancien)) essais.push(ancien);
+
+    return essais;
   }
 
   // ===== Tentative de connexion =====
@@ -55,14 +74,22 @@ export default function Connexion() {
 
     setChargement(true);
     try {
-      // 3. Se connecter avec l'e-mail derive + le mot de passe.
-      const email = versEmail(identifiant);
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password: motDePasse,
-      });
-      if (error) {
-        setErrGenerale(messageErreurAuth(error.message));
+      // 3. Essayer chaque identifiant possible jusqu'a ce que ca marche.
+      const essais = identifiantsPossibles(identifiant);
+      let data: { user: { id: string } } | null = null;
+      let derniereErreur = "";
+
+      for (const email of essais) {
+        const r = await supabase.auth.signInWithPassword({ email, password: motDePasse });
+        if (!r.error && r.data.user) {
+          data = { user: { id: r.data.user.id } };
+          break;
+        }
+        derniereErreur = r.error?.message ?? "";
+      }
+
+      if (!data) {
+        setErrGenerale(messageErreurAuth(derniereErreur));
         return;
       }
 
@@ -111,23 +138,45 @@ export default function Connexion() {
             </p>
           )}
 
-          {/* --- Champ identifiant --- */}
+          {/* --- Champ identifiant : numero (avec indicatif) ou e-mail --- */}
           <label className="mb-4 block">
             <span className="mb-1.5 block text-sm font-medium">
               Numero de telephone ou e-mail
             </span>
-            <input
-              className="champ"
-              style={errIdentifiant ? { borderColor: "#dc2626" } : undefined}
-              type="text"
-              value={identifiant}
-              onChange={(e) => {
-                setIdentifiant(e.target.value);
-                if (errIdentifiant) setErrIdentifiant(null);
-              }}
-              placeholder="07 07 12 34 56"
-              autoComplete="username"
-            />
+            <div className="flex gap-2">
+              {/* L'indicatif ne sert que pour un numero : on le cache des que
+                  la personne tape une adresse e-mail. */}
+              {!estEmail && (
+                <select
+                  value={codePays}
+                  onChange={(e) => setCodePays(e.target.value)}
+                  className="shrink-0 rounded-xl border px-2 py-3 text-sm outline-none"
+                  style={{
+                    borderColor: "var(--color-bordure)",
+                    background: "var(--color-fond)",
+                    color: "var(--color-texte)",
+                  }}
+                >
+                  {PAYS.map((p) => (
+                    <option key={p.code} value={p.code}>
+                      +{p.indicatif} {p.code}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <input
+                className="champ"
+                style={errIdentifiant ? { borderColor: "#dc2626" } : undefined}
+                type="text"
+                value={identifiant}
+                onChange={(e) => {
+                  setIdentifiant(e.target.value);
+                  if (errIdentifiant) setErrIdentifiant(null);
+                }}
+                placeholder="07 07 12 34 56"
+                autoComplete="username"
+              />
+            </div>
             {errIdentifiant && (
               <span className="mt-1 block text-xs text-red-600">{errIdentifiant}</span>
             )}
