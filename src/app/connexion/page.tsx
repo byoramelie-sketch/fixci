@@ -41,7 +41,9 @@ export default function Connexion() {
   // se connectera avec un compte cree avant la normalisation.
   function identifiantsPossibles(saisie: string): string[] {
     const valeur = saisie.trim();
-    if (valeur.includes("@")) return [valeur];
+    // Une adresse : on la ramene en minuscules, comme a l'inscription, pour
+    // que "Awa@Gmail.COM" et "awa@gmail.com" menent au meme compte.
+    if (valeur.includes("@")) return [valeur.toLowerCase()];
 
     const essais: string[] = [];
     const numero = normaliserTelephone(codePays, valeur);

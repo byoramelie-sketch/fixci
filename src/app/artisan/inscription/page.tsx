@@ -13,7 +13,14 @@ import {
 } from "@/components/consentement";
 import { PrisePhoto } from "@/components/prise-photo";
 import { ChampTelephone } from "@/components/champ-telephone";
-import { PAYS_DEFAUT, normaliserTelephone, telephoneVersEmail } from "@/lib/telephone";
+import {
+  PAYS_DEFAUT,
+  normaliserEmail,
+  normaliserTelephone,
+  telephoneVersEmail,
+} from "@/lib/telephone";
+import type { MethodeIdentifiant } from "@/lib/telephone";
+import { ChampEmail, ChoixIdentifiant } from "@/components/choix-identifiant";
 import type { Trade, Commune } from "@/lib/types";
 
 // =========================================================================
@@ -40,6 +47,12 @@ export default function InscriptionArtisan() {
 
   // Etape 1
   const [nom, setNom] = useState("");
+  // Comment l'artisan se connectera : avec son numero, ou avec son e-mail.
+  // Le numero reste demande dans les deux cas : c'est par la que les clients
+  // le joignent, et c'est ce numero qui s'affiche sur leur fiche.
+  const [methode, setMethode] = useState<MethodeIdentifiant>("telephone");
+  const [email, setEmail] = useState("");
+  const [errEmail, setErrEmail] = useState<string | null>(null);
   // Le pays choisi + le numero tel que la personne le tape.
   const [codePays, setCodePays] = useState(PAYS_DEFAUT.code);
   const [telephone, setTelephone] = useState("");
@@ -101,9 +114,15 @@ export default function InscriptionArtisan() {
       setErrNom("Veuillez entrer votre nom complet.");
       ok = false;
     }
-    // Le numero doit etre valide pour le pays choisi.
+    // Le numero est toujours demande : c'est par la que les clients vous joignent.
     if (!normaliserTelephone(codePays, telephone)) {
       setErrTel("Numéro invalide pour le pays choisi.");
+      ok = false;
+    }
+    // L'e-mail n'est verifie que s'il sert d'identifiant.
+    setErrEmail(null);
+    if (methode === "email" && !normaliserEmail(email)) {
+      setErrEmail("Adresse e-mail invalide.");
       ok = false;
     }
     if (motDePasse.length < 6) {
@@ -159,12 +178,25 @@ export default function InscriptionArtisan() {
         setChargement(false);
         return;
       }
-      const email = telephoneVersEmail(numero);
+
+      // ===== L'identifiant de connexion, selon le choix =====
+      let identifiant: string;
+      if (methode === "email") {
+        const propre = normaliserEmail(email);
+        if (!propre) {
+          setErrEmail("Adresse e-mail invalide.");
+          setChargement(false);
+          return;
+        }
+        identifiant = propre;
+      } else {
+        identifiant = telephoneVersEmail(numero);
+      }
 
       // ===== Creer le compte. Si le numero existe deja, on BLOQUE (aucune
       // fusion) et on renvoie a l'etape 1 avec le message. =====
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
-        email,
+        email: identifiant,
         password: motDePasse,
         options: { data: { name: nom, phone: numero, role: "artisan" } },
       });
@@ -306,6 +338,28 @@ export default function InscriptionArtisan() {
                 placeholder="Konan Kouassi"
               />
             </Champ>
+            {/* ===== Comment se connecter : numero ou e-mail ===== */}
+            <ChoixIdentifiant
+              methode={methode}
+              onChange={(m) => {
+                setMethode(m);
+                setErrEmail(null);
+              }}
+            />
+
+            {/* ===== L'e-mail, seulement s'il sert d'identifiant ===== */}
+            {methode === "email" && (
+              <ChampEmail
+                valeur={email}
+                onChange={(v) => {
+                  setEmail(v);
+                  if (errEmail) setErrEmail(null);
+                }}
+                erreur={errEmail}
+              />
+            )}
+
+            {/* ===== Le numero : toujours demande (vos clients vous appellent) ===== */}
             <ChampTelephone
               codePays={codePays}
               onCodePays={setCodePays}
@@ -315,7 +369,11 @@ export default function InscriptionArtisan() {
                 if (errTel) setErrTel(null);
               }}
               erreur={errTel}
-              aide="Ce numero sera votre identifiant, et celui que verront vos clients."
+              aide={
+                methode === "email"
+                  ? "C'est ce numero que verront vos clients pour vous joindre."
+                  : "Ce numero sera votre identifiant, et celui que verront vos clients."
+              }
             />
             <Champ label="Mot de passe (6 caracteres minimum)" erreur={errMdp}>
               <input

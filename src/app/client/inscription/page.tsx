@@ -17,7 +17,14 @@ import { FiletTricolore, Logo, Bouton } from "@/components/ui";
 import { BoutonRetour } from "@/components/icones";
 import { messageErreurAuth } from "@/lib/erreurs";
 import { ChampTelephone } from "@/components/champ-telephone";
-import { PAYS_DEFAUT, normaliserTelephone, telephoneVersEmail } from "@/lib/telephone";
+import {
+  PAYS_DEFAUT,
+  normaliserEmail,
+  normaliserTelephone,
+  telephoneVersEmail,
+} from "@/lib/telephone";
+import type { MethodeIdentifiant } from "@/lib/telephone";
+import { ChampEmail, ChoixIdentifiant } from "@/components/choix-identifiant";
 import {
   CaseAcceptation,
   LienTexte,
@@ -29,6 +36,11 @@ export default function InscriptionClient() {
   const supabase = createClient();
 
   const [nom, setNom] = useState("");
+  // Comment la personne se connectera : avec son numero, ou avec son e-mail.
+  // Le numero reste demande dans les deux cas : c'est le moyen de contact.
+  const [methode, setMethode] = useState<MethodeIdentifiant>("telephone");
+  const [email, setEmail] = useState("");
+  const [errEmail, setErrEmail] = useState<string | null>(null);
   // Le pays choisi + le numero tel que la personne le tape.
   const [codePays, setCodePays] = useState(PAYS_DEFAUT.code);
   const [telephone, setTelephone] = useState("");
@@ -56,9 +68,15 @@ export default function InscriptionClient() {
       setErrNom("Veuillez entrer votre nom complet.");
       ok = false;
     }
-    // Le numero doit etre valide pour le pays choisi.
+    // Le numero est toujours demande : c'est par la que l'artisan vous joint.
     if (!normaliserTelephone(codePays, telephone)) {
       setErrTel("Numéro invalide pour le pays choisi.");
+      ok = false;
+    }
+    // L'e-mail n'est verifie que s'il sert d'identifiant.
+    setErrEmail(null);
+    if (methode === "email" && !normaliserEmail(email)) {
+      setErrEmail("Adresse e-mail invalide.");
       ok = false;
     }
     if (motDePasse.length < 6) {
@@ -90,12 +108,27 @@ export default function InscriptionClient() {
         setChargement(false);
         return;
       }
-      const email = telephoneVersEmail(numero);
+
+      // ===== L'identifiant de connexion, selon le choix =====
+      // E-mail : l'adresse reelle, ramenee en minuscules.
+      // Telephone : une adresse fabriquee a partir du numero normalise.
+      let identifiant: string;
+      if (methode === "email") {
+        const propre = normaliserEmail(email);
+        if (!propre) {
+          setErrEmail("Adresse e-mail invalide.");
+          setChargement(false);
+          return;
+        }
+        identifiant = propre;
+      } else {
+        identifiant = telephoneVersEmail(numero);
+      }
 
       // ===== Creer le compte. Si le numero existe deja, on BLOQUE avec un
       // message clair (aucune fusion de comptes). =====
       const { data: signUp, error: errSignUp } = await supabase.auth.signUp({
-        email,
+        email: identifiant,
         password: motDePasse,
         options: { data: { name: nom, phone: numero, role: "client" } },
       });
@@ -184,6 +217,29 @@ export default function InscriptionClient() {
               placeholder="Awa Diallo"
             />
           </Champ>
+          {/* ===== Comment se connecter : numero ou e-mail ===== */}
+          <ChoixIdentifiant
+            methode={methode}
+            onChange={(m) => {
+              setMethode(m);
+              setErrEmail(null);
+              setErreur(null);
+            }}
+          />
+
+          {/* ===== L'e-mail, seulement s'il sert d'identifiant ===== */}
+          {methode === "email" && (
+            <ChampEmail
+              valeur={email}
+              onChange={(v) => {
+                setEmail(v);
+                if (errEmail) setErrEmail(null);
+              }}
+              erreur={errEmail}
+            />
+          )}
+
+          {/* ===== Le numero : toujours demande (moyen de contact) ===== */}
           <ChampTelephone
             codePays={codePays}
             onCodePays={setCodePays}
@@ -193,7 +249,11 @@ export default function InscriptionClient() {
               if (errTel) setErrTel(null);
             }}
             erreur={errTel}
-            aide="Ce numero sera votre identifiant de connexion."
+            aide={
+              methode === "email"
+                ? "Pour que l'artisan puisse vous joindre le jour de l'intervention."
+                : "Ce numero sera votre identifiant de connexion."
+            }
           />
           <Champ label="Mot de passe (6 caracteres minimum)" erreur={errMdp}>
             <input

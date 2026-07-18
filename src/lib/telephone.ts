@@ -110,3 +110,27 @@ export function telephoneVersEmail(e164: string): string {
 export function ancienEmail(saisie: string): string {
   return (saisie ?? "").replace(/\D/g, "") + "@example.com";
 }
+
+// =========================================================================
+// CHOIX DE L'IDENTIFIANT : telephone ou e-mail
+// =========================================================================
+
+export type MethodeIdentifiant = "telephone" | "email";
+
+// ===== L'adresse e-mail est-elle plausible ? =====
+// On reste volontairement simple : une seule arobase, un point dans le
+// domaine, pas d'espace. Le seul vrai test, c'est d'envoyer un message ;
+// ici on veut juste eviter les fautes de frappe evidentes.
+export function emailValide(saisie: string): boolean {
+  const v = (saisie ?? "").trim();
+  if (!v || /\s/.test(v)) return false;
+  return /^[^@]+@[^@]+\.[^@.]{2,}$/.test(v);
+}
+
+// ===== Normaliser une adresse e-mail =====
+// Minuscules et sans espaces : "Awa@Gmail.COM " et "awa@gmail.com" doivent
+// mener au MEME compte, exactement comme pour les numeros.
+export function normaliserEmail(saisie: string): string | null {
+  const v = (saisie ?? "").trim().toLowerCase();
+  return emailValide(v) ? v : null;
+}
